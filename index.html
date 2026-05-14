@@ -18,7 +18,7 @@
       getFirestore, collection, addDoc, getDocs, doc,
       getDoc, setDoc, updateDoc, deleteDoc, query, orderBy,
       onSnapshot, where, serverTimestamp, increment,
-      arrayUnion, arrayRemove, limit
+      arrayUnion, arrayRemove, limit, Timestamp
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
     // ══════════════════════════════════════════
@@ -32,7 +32,6 @@ const firebaseConfig = {
   messagingSenderId: "1037219652720",
   appId: "1:1037219652720:web:7a5481847b4c8749d980b5"
 };
-
     const app  = initializeApp(firebaseConfig);
     const auth = getAuth(app);
     const db   = getFirestore(app);
@@ -49,6 +48,7 @@ const firebaseConfig = {
     let unsubFeed = null;
     let unsubMsgs = null;
     let unsubRequests = null;
+    let unsubChats = null;
 
     // ─── HELPERS ────────────────────────────────
     const $   = id => document.getElementById(id);
@@ -59,6 +59,7 @@ const firebaseConfig = {
     const inn  = (id,h) => $(id) && ($(id).innerHTML = h);
     const avStyle = p => p ? `background-image:url('${esc(p)}');background-size:cover;background-position:center;font-size:0` : "";
     const avLetter = (name, photo) => photo ? "" : (name||"?")[0].toUpperCase();
+    const tsFormat = ts => ts ? new Date(ts.seconds*1000).toLocaleDateString("es",{day:"numeric",month:"short"}) : "";
 
     // ─── EXPOSE GLOBALS ─────────────────────────
     Object.assign(window, {
@@ -69,7 +70,8 @@ const firebaseConfig = {
       acceptRequest, declineRequest, openNewChatModal,
       saveProfile, doLogout, visitProfile,
       followUser, unfollowUser, showFollowModal, closeFollowModal,
-      showChatTab
+      showChatTab, previewPhoto, closeMobileNav, toggleMobileNav,
+      closeRequestNotif
     });
 
     // ══════════════════════════════════════════
@@ -78,9 +80,11 @@ const firebaseConfig = {
     onAuthStateChanged(auth, async user => {
       if (user) {
         ME = user;
+        const isNew = !(await getDoc(doc(db,"users",user.uid))).exists();
         meData = await ensureUserDoc(user);
         renderApp();
         listenRequests();
+        if(isNew) await sendWelcomeRequest(user);
       } else {
         ME = null;
         renderAuth();
@@ -105,6 +109,30 @@ const firebaseConfig = {
         return data;
       }
       return snap.data();
+    }
+
+    // ─── Solicitud de bienvenida al registrarse ───
+    async function sendWelcomeRequest(user) {
+      // Busca a otro usuario existente (distinto al recién registrado) para mandarle una "solicitud de bienvenida"
+      const q = query(collection(db,"users"), limit(5));
+      const snap = await getDocs(q);
+      const others = snap.docs.filter(d=>d.id!==user.uid);
+      if(!others.length) return;
+      // Tomamos el primero como "sistema/bienvenida"
+      const other = others[0].data();
+      const cid = chatId(other.uid, user.uid);
+      const existing = await getDoc(doc(db,"chatRequests",cid));
+      if(existing.exists()) return;
+      await setDoc(doc(db,"chatRequests",cid), {
+        from: other.uid,
+        fromName: other.displayName||other.email,
+        fromPhoto: other.photoURL||"",
+        to: user.uid,
+        toName: user.displayName||user.email,
+        status: "pending",
+        isWelcome: true,
+        createdAt: serverTimestamp()
+      });
     }
 
     function renderAuth() {
@@ -145,19 +173,33 @@ const firebaseConfig = {
       inn("auth-body", t==="login" ? loginHTML() : regHTML());
     }
     async function doLogin() {
+      const err = $("auth-err");
       try { await signInWithEmailAndPassword(auth, $("a-email").value, $("a-pass").value); }
-      catch(e) { $("auth-err").textContent = e.message; }
+      catch(e) { if(err) err.textContent = friendlyAuthError(e.code); }
     }
     async function doRegister() {
+      const err = $("auth-err");
       try {
         const name = $("a-name").value.trim();
+        if(!name){ if(err) err.textContent="El nombre es requerido"; return; }
         const c = await createUserWithEmailAndPassword(auth, $("a-email").value, $("a-pass").value);
         await updateProfile(c.user, { displayName: name });
-      } catch(e) { $("auth-err").textContent = e.message; }
+      } catch(e) { if(err) err.textContent = friendlyAuthError(e.code); }
     }
     async function loginGoogle() {
       try { await signInWithPopup(auth, goog); }
-      catch(e) { if($("auth-err")) $("auth-err").textContent = e.message; }
+      catch(e) { if($("auth-err")) $("auth-err").textContent = friendlyAuthError(e.code); }
+    }
+    function friendlyAuthError(code) {
+      const m = {
+        "auth/invalid-email":"Correo inválido",
+        "auth/user-not-found":"Usuario no encontrado",
+        "auth/wrong-password":"Contraseña incorrecta",
+        "auth/email-already-in-use":"Ese correo ya está registrado",
+        "auth/weak-password":"La contraseña es muy débil",
+        "auth/too-many-requests":"Demasiados intentos. Espera unos minutos"
+      };
+      return m[code]||"Error de autenticación";
     }
 
     // ══════════════════════════════════════════
@@ -166,29 +208,42 @@ const firebaseConfig = {
     function renderApp() {
       const u = ME;
       document.body.innerHTML = `
+      <!-- Mobile top bar -->
+      <div class="mobile-topbar">
+        <button class="hamburger" onclick="toggleMobileNav()" id="hamburger-btn">
+          <span></span><span></span><span></span>
+        </button>
+        <div class="auth-logo" style="font-size:20px">NEXUS</div>
+        <button class="btn-icon" onclick="openPostModal()" style="border:none;background:var(--accent);color:#fff;border-radius:8px;width:34px;height:34px">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+      </div>
+      <!-- Mobile overlay -->
+      <div class="mobile-overlay" id="mobile-overlay" onclick="closeMobileNav()"></div>
+
       <div class="app">
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
           <div class="sidebar-logo">NEXUS</div>
           <nav class="sidebar-nav">
-            <a class="nav-item" id="nav-feed" onclick="goView('feed')">
+            <a class="nav-item active" id="nav-feed" onclick="goView('feed');closeMobileNav()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
               Inicio
             </a>
-            <a class="nav-item" id="nav-chat" onclick="goView('chat')">
+            <a class="nav-item" id="nav-chat" onclick="goView('chat');closeMobileNav()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
               Mensajes
               <span class="badge" id="req-badge" style="display:none">!</span>
             </a>
-            <a class="nav-item" id="nav-profile" onclick="goView('profile')">
+            <a class="nav-item" id="nav-profile" onclick="goView('profile');closeMobileNav()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               Mi Perfil
             </a>
           </nav>
-          <button class="btn-new-post" onclick="openPostModal()">
+          <button class="btn-new-post" onclick="openPostModal();closeMobileNav()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Nueva Publicación
           </button>
-          <div class="sidebar-user" onclick="goView('profile')">
+          <div class="sidebar-user" onclick="goView('profile');closeMobileNav()">
             <div class="avatar sm" id="sb-av" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email, u.photoURL)}</div>
             <div style="flex:1;min-width:0">
               <div class="sb-name" id="sb-name">${esc(u.displayName||u.email)}</div>
@@ -227,9 +282,23 @@ const firebaseConfig = {
             <div id="follow-modal-list" style="margin-top:10px"></div>
           </div>
         </div>
+
+        <!-- Request Notification Toast -->
+        <div id="request-notif" class="request-notif" style="display:none"></div>
       </div>`;
 
       goView("feed");
+    }
+
+    function toggleMobileNav() {
+      const sidebar = $("sidebar");
+      const overlay = $("mobile-overlay");
+      sidebar.classList.toggle("open");
+      overlay.classList.toggle("active");
+    }
+    function closeMobileNav() {
+      $("sidebar")?.classList.remove("open");
+      $("mobile-overlay")?.classList.remove("active");
     }
 
     function goView(v) {
@@ -243,8 +312,31 @@ const firebaseConfig = {
     }
 
     // ══════════════════════════════════════════
-    //  FEED
+    //  FEED + ADS
     // ══════════════════════════════════════════
+    const adTemplates = [
+      { label:"Patrocinado", title:"¿Quieres crecer en redes?", body:"Llega a miles de personas con Nexus Ads. Empieza hoy.", cta:"Ver más", color:"#7c4dff" },
+      { label:"Anuncio", title:"Descuentos exclusivos", body:"Accede a ofertas únicas de marcas que confían en Nexus.", cta:"Explorar", color:"#00c6ff" },
+      { label:"Patrocinado", title:"Nexus Premium", body:"Desbloquea estadísticas avanzadas, temas y más funciones.", cta:"Pruébalo gratis", color:"#ff6b6b" },
+    ];
+
+    function adCard(idx) {
+      const ad = adTemplates[idx % adTemplates.length];
+      return `<div class="ad-card">
+        <div class="ad-label">${ad.label}</div>
+        <div class="ad-body">
+          <div class="ad-icon" style="background:${ad.color}20;color:${ad.color}">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </div>
+          <div class="ad-text">
+            <div class="ad-title">${ad.title}</div>
+            <div class="ad-desc">${ad.body}</div>
+          </div>
+        </div>
+        <button class="ad-cta" style="border-color:${ad.color};color:${ad.color}">${ad.cta} →</button>
+      </div>`;
+    }
+
     function renderFeed() {
       inn("main", `
         <div class="page-hd">
@@ -260,7 +352,7 @@ const firebaseConfig = {
 
     function setFeedTab(t) {
       feedTab = t;
-      document.querySelectorAll(".feed-tabs .tab").forEach(x=>x.classList.remove("active"));
+      document.querySelectorAll(".tab-row .tab").forEach(x=>x.classList.remove("active"));
       $(`ft-${t}`)?.classList.add("active");
       loadFeed();
     }
@@ -269,7 +361,7 @@ const firebaseConfig = {
       if(!ME || view!=="feed") return;
       if(unsubFeed) unsubFeed();
       const col = collection(db,"posts");
-      const q   = feedTab==="popular"
+      const q = feedTab==="popular"
         ? query(col, orderBy("score","desc"), limit(60))
         : query(col, orderBy("createdAt","desc"), limit(60));
       unsubFeed = onSnapshot(q, snap => {
@@ -279,21 +371,33 @@ const firebaseConfig = {
           inn("posts-wrap",`<div class="empty"><div class="ei">🌌</div><p>Sin publicaciones aún. ¡Sé el primero!</p></div>`);
           return;
         }
-        inn("posts-wrap", posts.map(postCard).join(""));
+        // Intercalar anuncio cada 3 posts
+        let html = "";
+        let adIdx = 0;
+        posts.forEach((p, i) => {
+          html += postCard(p);
+          if((i+1) % 3 === 0) {
+            html += adCard(adIdx++);
+          }
+        });
+        inn("posts-wrap", html);
       });
     }
 
     function postCard(p) {
       const liked = (p.likes||[]).includes(ME.uid);
-      const ts = p.createdAt ? new Date(p.createdAt.seconds*1000).toLocaleDateString("es",{day:"numeric",month:"short"}) : "";
+      const ts = tsFormat(p.createdAt);
       const mine = p.authorId===ME.uid;
       return `<div class="post-card" id="pc-${p.id}">
         <div class="post-hd">
-          <div class="avatar" style="${avStyle(p.authorPhoto)}" onclick="visitProfile('${p.authorId}')">${avLetter(p.authorName, p.authorPhoto)}</div>
-          <div style="flex:1">
-            <div class="post-author" onclick="visitProfile('${p.authorId}')">${esc(p.authorName||"Anónimo")}</div>
+          <div class="avatar" style="${avStyle(p.authorPhoto)}" onclick="visitProfile('${esc(p.authorId)}')">${avLetter(p.authorName, p.authorPhoto)}</div>
+          <div style="flex:1;min-width:0">
+            <div class="post-author" onclick="visitProfile('${esc(p.authorId)}')">${esc(p.authorName||"Anónimo")}</div>
             <div class="post-time">${ts}</div>
           </div>
+          ${mine?`<button class="act-btn" onclick="deletePost('${p.id}')" style="margin-left:auto;border-color:rgba(255,82,82,.2);color:var(--danger)" title="Eliminar">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          </button>`:""}
         </div>
         <div class="post-body">${esc(p.content||"")}</div>
         ${p.imageUrl?`<div class="post-img-wrap"><img src="${esc(p.imageUrl)}" onclick="openPost('${p.id}')" alt="" loading="lazy"/></div>`:""}
@@ -306,12 +410,17 @@ const firebaseConfig = {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
             ${p.commentCount||0}
           </button>
-          ${!mine?`<button class="act-btn" onclick="openChatWith('${p.authorId}','${esc(p.authorName||"Usuario")}')">
+          ${!mine?`<button class="act-btn" onclick="openChatWith('${esc(p.authorId)}','${esc(p.authorName||"Usuario")}')">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            Chat
+            Mensaje
           </button>`:""}
         </div>
       </div>`;
+    }
+
+    async function deletePost(pid) {
+      if(!confirm("¿Eliminar esta publicación?")) return;
+      await deleteDoc(doc(db,"posts",pid));
     }
 
     async function likePost(id, liked) {
@@ -350,11 +459,11 @@ const firebaseConfig = {
       onSnapshot(q, snap => {
         if(!$("cmts-list")) return;
         const cs = snap.docs.map(d=>({id:d.id,...d.data()}));
-        if(!cs.length){ inn("cmts-list",`<p class="subtle" style="padding:16px 0">Sin comentarios.</p>`); return; }
+        if(!cs.length){ inn("cmts-list",`<p class="subtle" style="padding:16px 0">Sin comentarios aún.</p>`); return; }
         inn("cmts-list", cs.map(c=>`
           <div class="cmt">
-            <div class="avatar sm" style="${avStyle(c.authorPhoto)}" onclick="visitProfile('${c.authorId}')">${avLetter(c.authorName,c.authorPhoto)}</div>
-            <div><span class="cmt-name" onclick="visitProfile('${c.authorId}')">${esc(c.authorName||"?")}</span> <span class="cmt-body">${esc(c.content)}</span></div>
+            <div class="avatar sm" style="${avStyle(c.authorPhoto)}" onclick="visitProfile('${esc(c.authorId)}')">${avLetter(c.authorName,c.authorPhoto)}</div>
+            <div><span class="cmt-name" onclick="visitProfile('${esc(c.authorId)}')">${esc(c.authorName||"?")}</span> <span class="cmt-body">${esc(c.content)}</span></div>
           </div>`).join(""));
       });
     }
@@ -400,6 +509,7 @@ const firebaseConfig = {
     //  VISIT OTHER PROFILES
     // ══════════════════════════════════════════
     async function visitProfile(uid) {
+      if(!uid) return;
       if(uid===ME.uid){ goView("profile"); return; }
       view = "other-profile";
       document.querySelectorAll(".nav-item").forEach(x=>x.classList.remove("active"));
@@ -409,7 +519,7 @@ const firebaseConfig = {
         getDoc(doc(db,"users",uid)),
         getDoc(doc(db,"users",ME.uid))
       ]);
-      if(!uSnap.exists()){ inn("main","<p class='subtle'>Usuario no encontrado</p>"); return; }
+      if(!uSnap.exists()){ inn("main","<p class='subtle' style='padding:40px'>Usuario no encontrado</p>"); return; }
       const u  = uSnap.data();
       meData   = meSnap.data()||meData;
       const amF = (meData.following||[]).includes(uid);
@@ -418,12 +528,12 @@ const firebaseConfig = {
       const posts = postsSnap.docs.map(d=>({id:d.id,...d.data()}));
 
       inn("main", `
-        <button class="back-btn" onclick="history.go(-1)">← Volver</button>
+        <button class="back-btn" onclick="history.back()">← Volver</button>
         <div class="profile-hero">
           <div class="avatar xl" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email, u.photoURL)}</div>
           <div class="profile-info">
             <h2>${esc(u.displayName||u.email)}</h2>
-            <p class="subtle">${esc(u.email)}</p>
+            <p class="subtle" style="font-size:13px">${esc(u.email)}</p>
             <p class="profile-bio" style="margin-top:6px">${esc(u.bio||"Sin bio")}</p>
             <div class="follow-stats">
               <span class="follow-stat-btn" onclick="showFollowModal('${uid}','followers')"><strong>${(u.followers||[]).length}</strong> seguidores</span>
@@ -446,6 +556,7 @@ const firebaseConfig = {
         updateDoc(doc(db,"users",ME.uid), { following: arrayUnion(uid) }),
         updateDoc(doc(db,"users",uid),    { followers: arrayUnion(ME.uid) })
       ]);
+      meData.following = [...(meData.following||[]), uid];
       visitProfile(uid);
     }
     async function unfollowUser(uid) {
@@ -453,6 +564,7 @@ const firebaseConfig = {
         updateDoc(doc(db,"users",ME.uid), { following: arrayRemove(uid) }),
         updateDoc(doc(db,"users",uid),    { followers: arrayRemove(ME.uid) })
       ]);
+      meData.following = (meData.following||[]).filter(x=>x!==uid);
       visitProfile(uid);
     }
 
@@ -468,7 +580,7 @@ const firebaseConfig = {
       inn("follow-modal-list", users.map(s=>{
         if(!s.exists()) return "";
         const u = s.data();
-        return `<div class="follow-row" onclick="closeFollowModal();visitProfile('${u.uid}')">
+        return `<div class="follow-row" onclick="closeFollowModal();visitProfile('${esc(u.uid)}')">
           <div class="avatar sm" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email, u.photoURL)}</div>
           <div>
             <div style="font-weight:600;font-size:13px">${esc(u.displayName||u.email)}</div>
@@ -484,9 +596,8 @@ const firebaseConfig = {
     // ══════════════════════════════════════════
     const chatId = (a,b) => [a,b].sort().join("__");
 
-    // Intenta abrir chat; si no existe → manda solicitud
     async function openChatWith(otherId, otherName) {
-      if(otherId===ME.uid) return;
+      if(!otherId || otherId===ME.uid) return;
       activeOtherId   = otherId;
       activeOtherName = otherName;
       const cid = chatId(ME.uid, otherId);
@@ -497,28 +608,26 @@ const firebaseConfig = {
       ]);
 
       if(chatSnap.exists() && chatSnap.data().accepted) {
-        // Chat ya existe y fue aceptado
         goView("chat");
         setTimeout(()=>openChatRoom(cid, otherName, otherId), 120);
       } else if(reqSnap.exists()) {
         const req = reqSnap.data();
         if(req.from===ME.uid){
-          alert(`Ya enviaste una solicitud a ${otherName}. Espera que la acepte.`);
+          showToast(`Ya enviaste una solicitud a ${otherName}. Espera que la acepte.`);
         } else {
-          // El otro me envió solicitud → la acepto directamente
-          if(confirm(`${otherName} ya te envió una solicitud. ¿Aceptar?`)) {
-            await acceptRequest(cid, otherId, otherName);
+          if(confirm(`${otherName} ya te envió una solicitud. ¿Aceptar ahora?`)) {
+            await acceptRequest(cid, req.from, req.fromName);
           }
         }
       } else {
         if(confirm(`¿Enviar solicitud de chat a ${otherName}?`)) {
-          const fromPhoto = meData.photoURL||ME.photoURL||"";
           await setDoc(doc(db,"chatRequests",cid), {
-            from: ME.uid, fromName: ME.displayName||ME.email, fromPhoto,
-            to: otherId,  toName: otherName,
-            status: "pending", createdAt: serverTimestamp()
+            from: ME.uid, fromName: ME.displayName||ME.email, fromPhoto: meData.photoURL||ME.photoURL||"",
+            to: otherId, toName: otherName,
+            status: "pending", isWelcome: false,
+            createdAt: serverTimestamp()
           });
-          alert(`✅ Solicitud enviada a ${otherName}`);
+          showToast(`✅ Solicitud enviada a ${otherName}`);
         }
       }
     }
@@ -540,12 +649,12 @@ const firebaseConfig = {
       activeOtherName = fromName;
       activeChatId    = cid;
       goView("chat");
-      setTimeout(()=>openChatRoom(cid, fromName, fromId), 120);
+      setTimeout(()=>openChatRoom(cid, fromName, fromId), 150);
     }
 
     async function declineRequest(reqId) {
       await deleteDoc(doc(db,"chatRequests",reqId));
-      if(view==="chat") renderChatView();
+      if(view==="chat") loadRequestList();
     }
 
     function listenRequests() {
@@ -556,7 +665,44 @@ const firebaseConfig = {
         const b = $("req-badge");
         if(b){ b.textContent=n||"!"; b.style.display=n?"":"none"; }
         if(view==="chat") loadRequestList();
+        // Mostrar toast de nueva solicitud
+        if(n>0) {
+          const req = snap.docs[0].data();
+          showRequestNotif(snap.docs[0].id, req);
+        } else {
+          hide("request-notif");
+        }
       });
+    }
+
+    function showRequestNotif(reqId, req) {
+      const notif = $("request-notif");
+      if(!notif || view==="chat") return;
+      notif.innerHTML = `
+        <div class="rn-body">
+          <div class="avatar sm" style="${avStyle(req.fromPhoto)}">${avLetter(req.fromName, req.fromPhoto)}</div>
+          <div style="flex:1;min-width:0">
+            <strong>${esc(req.fromName)}</strong> te envió una solicitud para chatear
+          </div>
+          <button class="btn-x" onclick="closeRequestNotif()" style="flex-shrink:0">✕</button>
+        </div>
+        <div class="rn-actions">
+          <button class="btn-primary sm" onclick="acceptRequest('${reqId}','${req.from}','${esc(req.fromName)}');closeRequestNotif()">Aceptar</button>
+          <button class="btn-danger sm" onclick="declineRequest('${reqId}');closeRequestNotif()">Eliminar</button>
+          <button class="btn-secondary sm" onclick="goView('chat');closeRequestNotif()">Ver solicitudes</button>
+        </div>`;
+      show("request-notif");
+    }
+
+    function closeRequestNotif() { hide("request-notif"); }
+
+    function showToast(msg) {
+      let t = document.createElement("div");
+      t.className = "toast-msg";
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(()=>t.classList.add("show"), 10);
+      setTimeout(()=>{ t.classList.remove("show"); setTimeout(()=>t.remove(),400); }, 3200);
     }
 
     // ─── CHAT VIEW ────────────────────────────────
@@ -594,18 +740,21 @@ const firebaseConfig = {
       else           { hide("chat-list-wrap"); show("req-list-wrap"); loadRequestList(); }
     }
 
-    async function loadChatList() {
+    function loadChatList() {
+      if(unsubChats) unsubChats();
       const q = query(collection(db,"chats"), where("members","array-contains",ME.uid), orderBy("lastMessageAt","desc"));
-      const snap = await getDocs(q);
-      const chats = snap.docs.map(d=>({id:d.id,...d.data()}));
-      renderChatList(chats);
+      unsubChats = onSnapshot(q, snap => {
+        const chats = snap.docs.map(d=>({id:d.id,...d.data()}));
+        renderChatList(chats);
+      });
     }
 
     function renderChatList(chats) {
       const wrap = $("chat-list-wrap");
       if(!wrap) return;
-      if(!chats.length){ wrap.innerHTML=`<p class="subtle" style="padding:16px;font-size:13px">Sin conversaciones aún</p>`; return; }
-      wrap.innerHTML = chats.map(c=>{
+      const accepted = chats.filter(c=>c.accepted);
+      if(!accepted.length){ wrap.innerHTML=`<p class="subtle" style="padding:16px;font-size:13px">Sin conversaciones aún</p>`; return; }
+      wrap.innerHTML = accepted.map(c=>{
         const oid    = c.members.find(m=>m!==ME.uid);
         const oname  = c.memberNames?.[oid]||"Usuario";
         const ophoto = c.memberPhotos?.[oid]||"";
@@ -634,14 +783,14 @@ const firebaseConfig = {
       if(!reqs.length){ wrap.innerHTML=`<p class="subtle" style="padding:16px;font-size:13px">Sin solicitudes pendientes</p>`; return; }
       wrap.innerHTML = reqs.map(r=>`
         <div class="req-card">
-          <div class="avatar sm" style="${avStyle(r.fromPhoto)}">${avLetter(r.fromName, r.fromPhoto)}</div>
+          <div class="avatar sm" style="${avStyle(r.fromPhoto)}" onclick="visitProfile('${r.from}')">${avLetter(r.fromName, r.fromPhoto)}</div>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:13px">${esc(r.fromName)}</div>
-            <div class="subtle" style="font-size:12px">quiere enviarte un mensaje</div>
+            <div style="font-weight:600;font-size:13px;cursor:pointer" onclick="visitProfile('${r.from}')">${esc(r.fromName)}</div>
+            <div class="subtle" style="font-size:12px">${r.isWelcome?"¡Bienvenido/a a Nexus! 👋":"quiere enviarte un mensaje"}</div>
           </div>
-          <div style="display:flex;gap:6px;flex-shrink:0">
+          <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
             <button class="btn-primary sm" onclick="acceptRequest('${r.id}','${r.from}','${esc(r.fromName)}')">Aceptar</button>
-            <button class="btn-danger sm" onclick="declineRequest('${r.id}')">Rechazar</button>
+            <button class="btn-danger sm" onclick="declineRequest('${r.id}')">Eliminar</button>
           </div>
         </div>`).join("");
     }
@@ -655,13 +804,19 @@ const firebaseConfig = {
       const chatMain = $("chat-main");
       if(!chatMain) return;
 
-      // Fetch other user photo
+      // Verify chat is accepted before allowing messages
+      const chatSnap = await getDoc(doc(db,"chats",cid));
+      if(!chatSnap.exists() || !chatSnap.data().accepted) {
+        chatMain.innerHTML = `<div class="chat-empty"><div class="ei">🔒</div><p>Este chat aún no está activo</p></div>`;
+        return;
+      }
+
       const otherSnap = await getDoc(doc(db,"users",oid));
       const otherPhoto = otherSnap.exists() ? otherSnap.data().photoURL||"" : "";
 
       chatMain.innerHTML = `
         <div class="chat-room-hd">
-          <div class="avatar sm" style="${avStyle(otherPhoto)}" onclick="visitProfile('${oid}')" style="cursor:pointer">${avLetter(oname, otherPhoto)}</div>
+          <div class="avatar sm" style="${avStyle(otherPhoto)}" onclick="visitProfile('${oid}')">${avLetter(oname, otherPhoto)}</div>
           <span class="chat-room-name" onclick="visitProfile('${oid}')">${esc(oname)}</span>
         </div>
         <div class="msgs-list" id="msgs-list"></div>
@@ -678,7 +833,7 @@ const firebaseConfig = {
         renderMessages(msgs);
       });
 
-      // Refresh chat list to show active state
+      // Refresh chat list
       loadChatList();
     }
 
@@ -700,19 +855,27 @@ const firebaseConfig = {
     async function sendMessage(cid) {
       const inp = $("msg-inp");
       const t   = inp?.value.trim();
-      if(!t) return;
-      // Verify chat exists and is accepted
+      if(!t || !cid) return;
+
+      // Verify chat exists & is accepted
       const chatSnap = await getDoc(doc(db,"chats",cid));
-      if(!chatSnap.exists()||!chatSnap.data().accepted){
-        alert("Este chat no está aceptado todavía."); return;
+      if(!chatSnap.exists() || !chatSnap.data().accepted) {
+        showToast("Este chat no está activo. Espera que el otro usuario acepte.");
+        return;
       }
+
       inp.value = "";
+      inp.focus();
       await addDoc(collection(db,"chats",cid,"messages"), {
-        content: t, senderId: ME.uid,
+        content: t,
+        senderId: ME.uid,
         senderName: ME.displayName||ME.email,
         createdAt: serverTimestamp()
       });
-      await updateDoc(doc(db,"chats",cid), { lastMessage: t, lastMessageAt: serverTimestamp() });
+      await updateDoc(doc(db,"chats",cid), {
+        lastMessage: t,
+        lastMessageAt: serverTimestamp()
+      });
     }
 
     async function openNewChatModal() {
@@ -720,8 +883,9 @@ const firebaseConfig = {
       if(!email) return;
       const q = query(collection(db,"users"), where("email","==",email.trim()));
       const snap = await getDocs(q);
-      if(snap.empty){ alert("Usuario no encontrado"); return; }
+      if(snap.empty){ showToast("Usuario no encontrado"); return; }
       const other = snap.docs[0].data();
+      if(other.uid===ME.uid){ showToast("No puedes chatear contigo mismo"); return; }
       await openChatWith(other.uid, other.displayName||other.email);
     }
 
@@ -736,10 +900,10 @@ const firebaseConfig = {
 
       inn("main", `
         <div class="profile-hero">
-          <div class="avatar xl" style="${avStyle(photo)}">${avLetter(ME.displayName||ME.email, photo)}</div>
+          <div class="avatar xl" id="profile-av" style="${avStyle(photo)}">${avLetter(ME.displayName||ME.email, photo)}</div>
           <div class="profile-info">
             <h2>${esc(ME.displayName||ME.email)}</h2>
-            <p class="subtle">${esc(ME.email)}</p>
+            <p class="subtle" style="font-size:13px">${esc(ME.email)}</p>
             <p class="profile-bio" style="margin-top:6px">${esc(u.bio||"Sin bio")}</p>
             <div class="follow-stats">
               <span class="follow-stat-btn" onclick="showFollowModal('${ME.uid}','followers')"><strong>${(u.followers||[]).length}</strong> seguidores</span>
@@ -749,55 +913,57 @@ const firebaseConfig = {
         </div>
 
         <div class="edit-section">
-          <h4>Editar perfil</h4>
+          <h4>✏️ Editar perfil</h4>
           <label class="inp-label">Nombre</label>
           <input class="inp" id="e-name" value="${esc(ME.displayName||"")}"/>
           <label class="inp-label">Bio</label>
-          <input class="inp" id="e-bio" value="${esc(u.bio||"")}"/>
+          <input class="inp" id="e-bio" value="${esc(u.bio||"")}" placeholder="Cuéntanos sobre ti..."/>
           <label class="inp-label">URL de foto de perfil</label>
-          <div style="display:flex;gap:8px">
-            <input class="inp" id="e-photo" value="${esc(photo)}" placeholder="https://i.imgur.com/..."/>
-            <button class="btn-secondary" onclick="previewPhoto()" style="white-space:nowrap">Vista previa</button>
+          <div style="display:flex;gap:8px;align-items:flex-start">
+            <div style="flex:1">
+              <input class="inp" id="e-photo" value="${esc(photo)}" placeholder="https://i.imgur.com/..." oninput="previewPhoto()"/>
+            </div>
           </div>
-          <div id="photo-prev"></div>
+          <div id="photo-prev" style="margin-top:6px">${photo?`<img src="${esc(photo)}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid var(--accent)" onerror="this.style.opacity=.3"/>`:""}</div>
           <button class="btn-primary" style="align-self:flex-start" onclick="saveProfile()">Guardar cambios</button>
         </div>
 
         <h4 style="margin:24px 0 14px;font-family:'Syne',sans-serif;font-size:17px">Mis publicaciones</h4>
         <div id="my-posts"><div class="loader-txt">Cargando...</div></div>`);
 
-      window.previewPhoto = () => {
-        const url  = $("e-photo")?.value.trim();
-        const prev = $("photo-prev");
-        if(!prev) return;
-        prev.innerHTML = url
-          ? `<img src="${esc(url)}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid var(--accent);margin-top:6px" onerror="this.style.opacity=.3"/>`
-          : "";
-      };
-
       const q = query(collection(db,"posts"), where("authorId","==",ME.uid), orderBy("createdAt","desc"));
       onSnapshot(q, snap=>{
         const posts = snap.docs.map(d=>({id:d.id,...d.data()}));
         const el = $("my-posts");
         if(!el) return;
-        el.innerHTML = posts.length ? posts.map(postCard).join("") : `<p class="subtle">Sin publicaciones aún</p>`;
+        el.innerHTML = posts.length ? posts.map(postCard).join("") : `<p class="subtle" style="padding:20px 0">Sin publicaciones aún</p>`;
       });
+    }
+
+    function previewPhoto() {
+      const url  = $("e-photo")?.value.trim();
+      const prev = $("photo-prev");
+      if(!prev) return;
+      prev.innerHTML = url
+        ? `<img src="${esc(url)}" style="width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid var(--accent)" onerror="this.style.opacity=.3"/>`
+        : "";
     }
 
     async function saveProfile() {
       const name  = $("e-name")?.value.trim();
       const bio   = $("e-bio")?.value.trim();
       const photo = $("e-photo")?.value.trim();
+      if(!name){ showToast("El nombre no puede estar vacío"); return; }
       await updateProfile(ME, { displayName: name, photoURL: photo||"" });
-      await updateDoc(doc(db,"users",ME.uid), { displayName: name, bio, photoURL: photo||"" });
-      meData.displayName = name; meData.bio = bio; meData.photoURL = photo||"";
+      await updateDoc(doc(db,"users",ME.uid), { displayName: name, bio: bio||"", photoURL: photo||"" });
+      meData.displayName = name; meData.bio = bio||""; meData.photoURL = photo||"";
       set("sb-name", name);
       const sbAv = $("sb-av");
       if(sbAv){
         if(photo){ sbAv.setAttribute("style", avStyle(photo)); sbAv.textContent=""; }
         else { sbAv.removeAttribute("style"); sbAv.textContent = name[0].toUpperCase(); }
       }
-      alert("Perfil actualizado ✓");
+      showToast("✅ Perfil actualizado");
       renderMyProfile();
     }
 
@@ -805,6 +971,7 @@ const firebaseConfig = {
       if(unsubFeed) unsubFeed();
       if(unsubMsgs) unsubMsgs();
       if(unsubRequests) unsubRequests();
+      if(unsubChats) unsubChats();
       await signOut(auth);
     }
   </script>
@@ -827,13 +994,14 @@ const firebaseConfig = {
 
     body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
 
-    /* AUTH */
+    /* ─── AUTH ────────────────────────── */
     .auth-bg {
       min-height:100vh; display:flex; align-items:center; justify-content:center;
       background: radial-gradient(ellipse at 20% 20%, #1e0a40, var(--bg) 55%),
                   radial-gradient(ellipse at 80% 80%, #051a28, transparent 50%);
+      padding:16px;
     }
-    .auth-card { width:400px; background:var(--surface); border:1px solid var(--border); border-radius:22px; padding:40px 36px; display:flex; flex-direction:column; gap:14px; }
+    .auth-card { width:400px; max-width:100%; background:var(--surface); border:1px solid var(--border); border-radius:22px; padding:36px 32px; display:flex; flex-direction:column; gap:14px; }
     .auth-logo { font-family:'Syne',sans-serif; font-weight:800; font-size:34px; letter-spacing:-1px; text-align:center; background:linear-gradient(135deg,var(--accent),var(--a2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
     .auth-sub  { text-align:center; color:var(--subtle); font-size:13px; margin-top:-8px; }
     .auth-tabs { display:flex; gap:8px; }
@@ -846,7 +1014,7 @@ const firebaseConfig = {
     .btn-google:hover { border-color:var(--accent); }
     .auth-err  { color:var(--danger); font-size:12px; text-align:center; min-height:16px; }
 
-    /* INPUTS + BUTTONS */
+    /* ─── INPUTS + BUTTONS ────────────── */
     .inp { width:100%; padding:11px 13px; background:var(--s2); border:1px solid var(--border); border-radius:10px; color:var(--text); font-family:inherit; font-size:14px; outline:none; transition:border-color .2s; }
     .inp:focus { border-color:var(--accent); }
     .inp-label { font-size:12px; color:var(--subtle); margin-bottom:3px; display:block; }
@@ -856,17 +1024,23 @@ const firebaseConfig = {
     .btn-primary:active { transform:scale(.97); }
     .btn-primary.w100 { width:100%; }
     .btn-primary.sm { padding:8px 14px; border-radius:8px; }
-
     .btn-secondary { padding:9px 16px; background:var(--s2); color:var(--text); border:1px solid var(--border); border-radius:10px; cursor:pointer; font-family:inherit; font-size:13px; transition:all .2s; white-space:nowrap; }
     .btn-secondary:hover { border-color:var(--accent); color:var(--accent); }
-
+    .btn-secondary.sm { padding:7px 12px; font-size:12px; }
     .btn-danger { padding:8px 14px; background:rgba(255,82,82,.12); color:var(--danger); border:1px solid rgba(255,82,82,.3); border-radius:8px; cursor:pointer; font-family:inherit; font-size:13px; transition:all .2s; }
     .btn-danger:hover { background:rgba(255,82,82,.22); }
-    .btn-danger.sm { padding:7px 12px; }
+    .btn-danger.sm { padding:7px 12px; font-size:12px; }
 
-    /* SHELL */
+    /* ─── MOBILE TOP BAR ──────────────── */
+    .mobile-topbar { display:none; align-items:center; justify-content:space-between; padding:12px 16px; background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:100; }
+    .hamburger { background:none; border:none; cursor:pointer; display:flex; flex-direction:column; gap:5px; padding:4px; }
+    .hamburger span { display:block; width:22px; height:2px; background:var(--text); border-radius:2px; transition:all .3s; }
+    .mobile-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:150; }
+    .mobile-overlay.active { display:block; }
+
+    /* ─── SHELL ───────────────────────── */
     .app { display:flex; min-height:100vh; }
-    .sidebar { width:240px; min-height:100vh; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:22px 14px; position:sticky; top:0; height:100vh; flex-shrink:0; }
+    .sidebar { width:240px; min-height:100vh; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:22px 14px; position:sticky; top:0; height:100vh; flex-shrink:0; z-index:200; transition:transform .3s; }
     .sidebar-logo { font-family:'Syne',sans-serif; font-weight:800; font-size:22px; background:linear-gradient(135deg,var(--accent),var(--a2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:26px; padding-left:8px; }
     .sidebar-nav { flex:1; display:flex; flex-direction:column; gap:3px; }
     .nav-item { display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:10px; color:var(--subtle); text-decoration:none; cursor:pointer; font-size:14px; font-weight:500; transition:all .2s; position:relative; }
@@ -877,27 +1051,27 @@ const firebaseConfig = {
     .btn-new-post:hover { opacity:.85; }
     .sidebar-user { display:flex; align-items:center; gap:10px; padding:10px; border-radius:10px; border:1px solid var(--border); cursor:pointer; transition:background .2s; margin-top:auto; }
     .sidebar-user:hover { background:var(--s2); }
-    .sb-name  { font-size:13px; font-weight:600; }
-    .sb-email { font-size:11px; color:var(--subtle); }
-    .btn-logout { margin-left:auto; background:none; border:none; color:var(--subtle); cursor:pointer; padding:4px; transition:color .2s; }
+    .sb-name  { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .sb-email { font-size:11px; color:var(--subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .btn-logout { margin-left:auto; background:none; border:none; color:var(--subtle); cursor:pointer; padding:4px; transition:color .2s; flex-shrink:0; }
     .btn-logout:hover { color:var(--danger); }
 
-    /* AVATAR */
+    /* ─── AVATAR ──────────────────────── */
     .avatar { width:42px; height:42px; border-radius:50%; background:linear-gradient(135deg,var(--accent),#9c27b0); display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:16px; color:#fff; flex-shrink:0; cursor:pointer; }
     .avatar.sm { width:34px; height:34px; font-size:13px; }
     .avatar.xl { width:86px; height:86px; font-size:32px; border:3px solid var(--accent); }
 
-    /* MAIN */
+    /* ─── MAIN ────────────────────────── */
     .main { flex:1; max-width:680px; padding:24px 24px 80px; overflow-y:auto; max-height:100vh; }
 
-    /* FEED */
+    /* ─── FEED ────────────────────────── */
     .page-hd { margin-bottom:20px; }
     .page-hd h2 { font-family:'Syne',sans-serif; font-weight:800; font-size:26px; margin-bottom:14px; }
     .tab-row { display:flex; gap:8px; }
     .tab { padding:8px 18px; border:1px solid var(--border); background:none; color:var(--subtle); border-radius:20px; cursor:pointer; font-family:inherit; font-size:13px; transition:all .2s; }
     .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
 
-    /* POST CARD */
+    /* ─── POST CARD ───────────────────── */
     .post-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:18px; margin-bottom:14px; transition:border-color .2s; }
     .post-card:hover { border-color:rgba(124,77,255,.4); }
     .post-hd { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
@@ -912,7 +1086,18 @@ const firebaseConfig = {
     .act-btn:hover { border-color:var(--accent); color:var(--accent); }
     .act-btn.liked { color:var(--danger); border-color:rgba(255,82,82,.3); }
 
-    /* POST DETAIL */
+    /* ─── AD CARD ─────────────────────── */
+    .ad-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px; margin-bottom:14px; position:relative; overflow:hidden; }
+    .ad-card::before { content:""; position:absolute; inset:0; background:linear-gradient(135deg,rgba(124,77,255,.04),rgba(0,229,255,.04)); pointer-events:none; }
+    .ad-label { font-size:10px; color:var(--subtle); text-transform:uppercase; letter-spacing:.8px; margin-bottom:10px; font-weight:600; }
+    .ad-body { display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+    .ad-icon { width:46px; height:46px; border-radius:12px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .ad-title { font-family:'Syne',sans-serif; font-weight:700; font-size:14px; margin-bottom:4px; }
+    .ad-desc { font-size:12px; color:var(--subtle); line-height:1.5; }
+    .ad-cta { background:none; border:1px solid; border-radius:8px; padding:7px 14px; cursor:pointer; font-family:inherit; font-size:12px; font-weight:600; transition:all .2s; }
+    .ad-cta:hover { opacity:.75; }
+
+    /* ─── POST DETAIL ─────────────────── */
     .back-btn { background:none; border:none; color:var(--accent); cursor:pointer; font-family:inherit; font-size:14px; margin-bottom:16px; display:block; }
     .comments-box { margin-top:16px; }
     .comments-box h4 { font-family:'Syne',sans-serif; font-size:16px; margin-bottom:14px; }
@@ -922,7 +1107,7 @@ const firebaseConfig = {
     .cmt-name:hover { color:var(--accent); }
     .cmt-body { font-size:13px; }
 
-    /* PROFILE */
+    /* ─── PROFILE ─────────────────────── */
     .profile-hero { display:flex; align-items:flex-start; gap:20px; margin-bottom:24px; flex-wrap:wrap; }
     .profile-info h2 { font-family:'Syne',sans-serif; font-size:22px; }
     .profile-bio { font-size:13px; color:var(--subtle); }
@@ -935,8 +1120,8 @@ const firebaseConfig = {
     .follow-row { display:flex; align-items:center; gap:12px; padding:10px; border-radius:10px; cursor:pointer; transition:background .2s; }
     .follow-row:hover { background:var(--s2); }
 
-    /* CHAT */
-    .chat-layout { display:flex; height:calc(100vh - 48px); }
+    /* ─── CHAT ────────────────────────── */
+    .chat-layout { display:flex; height:calc(100vh - 48px); gap:0; }
     .chat-sidebar { width:290px; border-right:1px solid var(--border); display:flex; flex-direction:column; flex-shrink:0; overflow:hidden; }
     .chat-sb-hd { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--border); }
     .chat-sb-hd h3 { font-family:'Syne',sans-serif; font-size:17px; }
@@ -950,8 +1135,8 @@ const firebaseConfig = {
     .chat-item-info { flex:1; min-width:0; }
     .ci-name { font-size:13px; font-weight:600; }
     .ci-last { font-size:12px; color:var(--subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .ci-time { font-size:11px; color:var(--subtle); }
-    .req-card { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border); }
+    .ci-time { font-size:11px; color:var(--subtle); white-space:nowrap; }
+    .req-card { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
     .chat-main { flex:1; display:flex; flex-direction:column; min-width:0; }
     .chat-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--subtle); }
     .chat-room-hd { display:flex; align-items:center; gap:12px; padding:13px 16px; border-bottom:1px solid var(--border); flex-shrink:0; }
@@ -967,9 +1152,19 @@ const firebaseConfig = {
     .msg-ts { font-size:10px; color:var(--subtle); margin-top:3px; }
     .chat-inp-row { display:flex; align-items:center; gap:8px; padding:13px 16px; border-top:1px solid var(--border); flex-shrink:0; }
 
-    /* MODAL */
-    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(5px); display:flex; align-items:center; justify-content:center; z-index:999; }
-    .modal-box { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:22px; width:480px; max-width:95vw; display:flex; flex-direction:column; gap:12px; }
+    /* ─── REQUEST NOTIFICATION ────────── */
+    .request-notif { position:fixed; bottom:24px; right:24px; background:var(--surface); border:1px solid var(--accent); border-radius:16px; padding:16px; width:320px; max-width:calc(100vw - 32px); z-index:9998; box-shadow:0 8px 40px rgba(124,77,255,.3); animation:slideUp .3s ease; }
+    @keyframes slideUp { from{transform:translateY(20px);opacity:0} to{transform:translateY(0);opacity:1} }
+    .rn-body { display:flex; align-items:center; gap:10px; font-size:13px; margin-bottom:12px; }
+    .rn-actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+    /* ─── TOAST ───────────────────────── */
+    .toast-msg { position:fixed; bottom:80px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--s2); border:1px solid var(--border); color:var(--text); padding:12px 20px; border-radius:30px; font-size:13px; z-index:9999; opacity:0; transition:all .35s; white-space:nowrap; box-shadow:0 4px 20px rgba(0,0,0,.4); }
+    .toast-msg.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+    /* ─── MODAL ───────────────────────── */
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(5px); display:flex; align-items:center; justify-content:center; z-index:999; padding:16px; }
+    .modal-box { background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:22px; width:480px; max-width:100%; display:flex; flex-direction:column; gap:12px; max-height:90vh; overflow-y:auto; }
     .modal-hd { display:flex; align-items:center; justify-content:space-between; }
     .modal-hd h3 { font-family:'Syne',sans-serif; font-size:17px; }
     .btn-x { background:none; border:none; color:var(--subtle); font-size:18px; cursor:pointer; }
@@ -978,7 +1173,7 @@ const firebaseConfig = {
     .txtarea:focus { border-color:var(--accent); }
     .modal-ft { display:flex; align-items:center; justify-content:space-between; }
 
-    /* UTILS */
+    /* ─── UTILS ───────────────────────── */
     .subtle    { color:var(--subtle); }
     .sm        { font-size:12px; }
     .loader-txt{ color:var(--subtle); font-size:14px; padding:40px; text-align:center; }
@@ -989,6 +1184,44 @@ const firebaseConfig = {
     ::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
 
     #config-notice { position:fixed; bottom:20px; right:20px; background:var(--accent); color:#fff; padding:14px 18px; border-radius:12px; font-size:13px; max-width:300px; z-index:9999; box-shadow:0 8px 30px rgba(124,77,255,.45); line-height:1.6; }
+
+    /* ─── MOBILE RESPONSIVE ──────────── */
+    @media (max-width: 768px) {
+      .mobile-topbar { display:flex; }
+
+      .sidebar {
+        position:fixed; left:0; top:0; height:100vh;
+        transform:translateX(-100%);
+        box-shadow:4px 0 24px rgba(0,0,0,.5);
+      }
+      .sidebar.open { transform:translateX(0); }
+
+      .app { flex-direction:column; }
+      .main { max-width:100%; padding:16px 12px 80px; max-height:calc(100vh - 57px); margin-top:57px; }
+
+      /* Chat mobile */
+      .chat-layout { height:calc(100vh - 57px); flex-direction:column; }
+      .chat-sidebar { width:100%; height:auto; max-height:45vh; border-right:none; border-bottom:1px solid var(--border); }
+      #chat-list-wrap, #req-list-wrap { max-height:200px; }
+      .chat-main { height:0; flex:1; }
+
+      .request-notif { left:12px; right:12px; bottom:12px; width:auto; }
+      .toast-msg { white-space:normal; text-align:center; max-width:calc(100vw - 48px); }
+      
+      .profile-hero { flex-direction:column; align-items:center; text-align:center; }
+      .follow-stats { justify-content:center; }
+      .profile-info div[style*="flex"] { justify-content:center; }
+
+      .post-card { padding:14px; }
+      .msg { max-width:85%; }
+    }
+
+    @media (max-width: 480px) {
+      .auth-card { padding:28px 20px; }
+      .chat-sb-hd h3 { font-size:15px; }
+      .page-hd h2 { font-size:22px; }
+      .avatar.xl { width:70px; height:70px; font-size:26px; }
+    }
   </style>
 </head>
 <body>
