@@ -492,18 +492,17 @@
           <div class="profile-hero">
             <div class="avatar xl" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email, u.photoURL)}</div>
             <div class="profile-info">
-              <h2>${esc(u.displayName||u.email)}</h2>
-              <p class="subtle">${esc(u.email)}</p>
+              <h2>${esc(u.displayName||"Usuario")}</h2>
               <p class="profile-bio" style="margin-top:6px">${esc(u.bio||"Sin bio")}</p>
               <div class="follow-stats">
-                <span class="follow-stat-btn" onclick="showFollowModal('${uid}','followers')"><strong>${(u.followers||[]).length}</strong> seguidores</span>
+                <span class="follow-stat-btn" onclick="showFollowModal('${uid}','followers')"><strong id="fcount-${uid}">${(u.followers||[]).length}</strong> seguidores</span>
                 <span class="follow-stat-btn" onclick="showFollowModal('${uid}','following')"><strong>${(u.following||[]).length}</strong> siguiendo</span>
               </div>
               <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
                 ${amF
-                  ? `<button class="btn-secondary" onclick="unfollowUser('${uid}')">✓ Siguiendo</button>`
-                  : `<button class="btn-primary sm" onclick="followUser('${uid}')">+ Seguir</button>`}
-                <button class="btn-secondary" onclick="openChatWith('${uid}','${esc(u.displayName||u.email)}')">💬 Mensaje privado</button>
+                  ? `<button id="follow-btn-${uid}" class="btn-secondary" onclick="unfollowUser('${uid}')">✓ Siguiendo</button>`
+                  : `<button id="follow-btn-${uid}" class="btn-primary sm" onclick="followUser('${uid}')">+ Seguir</button>`}
+                <button class="btn-secondary" onclick="openChatWith('${uid}','${esc(u.displayName||"Usuario")}')">💬 Mensaje privado</button>
               </div>
             </div>
           </div>
@@ -515,20 +514,41 @@
     }
 
     async function followUser(uid) {
+      // Actualizar boton de inmediato (optimista)
+      const btn = document.getElementById("follow-btn-" + uid);
+      if(btn){ btn.disabled=true; btn.textContent="..."; }
       await Promise.all([
         updateDoc(doc(db,"users",ME.uid), { following: arrayUnion(uid) }),
         updateDoc(doc(db,"users",uid),    { followers: arrayUnion(ME.uid) })
       ]);
       meData.following = [...(meData.following||[]), uid];
-      visitProfile(uid);
+      // Cambiar boton sin recargar pagina
+      if(btn){
+        btn.disabled=false;
+        btn.className="btn-secondary";
+        btn.textContent="✓ Siguiendo";
+        btn.setAttribute("onclick","unfollowUser('"+uid+"')");
+      }
+      // Actualizar contador de seguidores en el DOM si existe
+      const fcEl = document.getElementById("fcount-"+uid);
+      if(fcEl){ const n=parseInt(fcEl.textContent||"0"); fcEl.textContent=n+1; }
     }
     async function unfollowUser(uid) {
+      const btn = document.getElementById("follow-btn-" + uid);
+      if(btn){ btn.disabled=true; btn.textContent="..."; }
       await Promise.all([
         updateDoc(doc(db,"users",ME.uid), { following: arrayRemove(uid) }),
         updateDoc(doc(db,"users",uid),    { followers: arrayRemove(ME.uid) })
       ]);
       meData.following = (meData.following||[]).filter(x=>x!==uid);
-      visitProfile(uid);
+      if(btn){
+        btn.disabled=false;
+        btn.className="btn-primary sm";
+        btn.textContent="+ Seguir";
+        btn.setAttribute("onclick","followUser('"+uid+"')");
+      }
+      const fcEl = document.getElementById("fcount-"+uid);
+      if(fcEl){ const n=parseInt(fcEl.textContent||"1"); fcEl.textContent=Math.max(0,n-1); }
     }
 
     async function showFollowModal(uid, type) {
@@ -547,8 +567,7 @@
         return `<div class="follow-row" onclick="closeFollowModal();visitProfile('${u.uid}')">
           <div class="avatar sm" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email, u.photoURL)}</div>
           <div>
-            <div style="font-weight:600;font-size:13px">${esc(u.displayName||u.email)}</div>
-            <div class="subtle" style="font-size:11px">${esc(u.email)}</div>
+            <div style="font-weight:600;font-size:13px">${esc(u.displayName||"Usuario")}</div>
           </div>
         </div>`;
       }).join(""));
@@ -627,18 +646,26 @@
     }
 
     // Escuchar chats en tiempo real con onSnapshot
+    // Sin orderBy para evitar requerir indice compuesto; ordenamos en cliente.
     function startListeningChats() {
       if(unsubChats) unsubChats();
       const q = query(
         collection(db,"chats"),
-        where("members","array-contains",ME.uid),
-        orderBy("lastMessageAt","desc")
+        where("members","array-contains",ME.uid)
       );
       unsubChats = onSnapshot(q, snap => {
-        const chats = snap.docs.map(d=>({id:d.id,...d.data()}));
+        const chats = snap.docs
+          .map(d=>({id:d.id,...d.data()}))
+          .sort((a,b)=>{
+            const ta = a.lastMessageAt?.seconds ?? a.createdAt?.seconds ?? 0;
+            const tb = b.lastMessageAt?.seconds ?? b.createdAt?.seconds ?? 0;
+            return tb - ta;
+          });
         renderChatList(chats);
       }, err => {
         console.error("Chat list error:", err);
+        const wrap = document.getElementById("chat-list-wrap");
+        if(wrap) wrap.innerHTML = '<p style="padding:16px;font-size:12px;color:var(--subtle)">Error: ' + err.message + '</p>';
       });
     }
 
