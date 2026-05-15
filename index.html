@@ -55,6 +55,12 @@
     // Unread tracking: { chatId -> count }
     let unreadCounts = {};
     let totalUnread = 0;
+    // Communities state
+    let activeCircleId = null;
+    let activeCircleData = null;
+    let unsubCircleMsgs = null;
+    let circleReplyingTo = null;
+    let communitySubTab = "explore"; // "explore" | "mine"
 
     // ─── HELPERS ────────────────────────────────
     const $   = id => document.getElementById(id);
@@ -79,7 +85,10 @@
       showChatTab, closeMobileSidebar, toggleMobileSidebar,
       backToChatList, deletePost,
       replyToComment, cancelReply,
-      setReplyMsg, cancelReplyMsg
+      setReplyMsg, cancelReplyMsg,
+      openCreateCircleModal, closeCreateCircleModal, submitCircle,
+      joinCircle, openCircle, backToCommunities, setCommunitySubTab,
+      sendCircleMessage, setCircleReplyMsg, cancelCircleReplyMsg
     });
 
     // ══════════════════════════════════════════
@@ -201,6 +210,10 @@
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
               Mensajes
             </a>
+            <a class="nav-item" id="nav-communities" onclick="goView('communities');closeMobileSidebar()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v3M5 16l5-2M19 16l-5-2"/></svg>
+              Comunidades
+            </a>
             <a class="nav-item" id="nav-profile" onclick="goView('profile');closeMobileSidebar()">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
               Mi Perfil
@@ -240,6 +253,10 @@
             </div>
             <span>Post</span>
           </a>
+          <a class="mob-nav-item" id="mobnav-communities" onclick="goView('communities')">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v3M5 16l5-2M19 16l-5-2"/></svg>
+            <span>Comunidades</span>
+          </a>
           <a class="mob-nav-item" id="mobnav-profile" onclick="goView('profile')">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             <span>Perfil</span>
@@ -272,6 +289,28 @@
             <div id="follow-modal-list" style="margin-top:10px"></div>
           </div>
         </div>
+
+        <!-- Create Circle Modal -->
+        <div class="overlay" id="create-circle-modal" style="display:none" onclick="if(event.target===this)closeCreateCircleModal()">
+          <div class="modal-box">
+            <div class="modal-hd">
+              <h3>✦ Crear Círculo</h3>
+              <button class="btn-x" onclick="closeCreateCircleModal()">✕</button>
+            </div>
+            <label class="inp-label">Nombre del círculo *</label>
+            <input class="inp" id="circle-name" placeholder="Ej: Amantes del diseño"/>
+            <label class="inp-label">URL de imagen / portada</label>
+            <input class="inp" id="circle-img" type="url" placeholder="https://i.imgur.com/..."/>
+            <label class="inp-label">Descripción</label>
+            <textarea class="txtarea" id="circle-desc" style="min-height:80px" placeholder="¿De qué trata este círculo?"></textarea>
+            <label class="inp-label">Reglas del círculo</label>
+            <textarea class="txtarea" id="circle-rules" style="min-height:70px" placeholder="Ej: 1. Respeto mutuo&#10;2. Sin spam"></textarea>
+            <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:4px">
+              <button class="btn-secondary" onclick="closeCreateCircleModal()">Cancelar</button>
+              <button class="btn-primary" onclick="submitCircle()">Crear círculo</button>
+            </div>
+          </div>
+        </div>
       </div>`;
 
       goView("feed");
@@ -296,16 +335,18 @@
       chatPanelOpen = false;
       // sync desktop sidebar
       document.querySelectorAll(".nav-item").forEach(x=>x.classList.remove("active"));
-      const ni = $(`nav-${["post-detail","other-profile"].includes(v)?"feed":v}`);
+      const navKey = ["post-detail","other-profile"].includes(v) ? "feed" : v==="circle-room" ? "communities" : v;
+      const ni = $(`nav-${navKey}`);
       if(ni) ni.classList.add("active");
       // sync mobile bottom nav
       document.querySelectorAll(".mob-nav-item").forEach(x=>x.classList.remove("active"));
-      const mni = $(`mobnav-${["post-detail","other-profile"].includes(v)?"feed":v}`);
+      const mni = $(`mobnav-${navKey}`);
       if(mni) mni.classList.add("active");
 
-      if(v==="feed")         renderFeed();
-      else if(v==="chat")    renderChatView();
-      else if(v==="profile") renderMyProfile();
+      if(v==="feed")              renderFeed();
+      else if(v==="chat")         renderChatView();
+      else if(v==="profile")      renderMyProfile();
+      else if(v==="communities")  renderCommunitiesView();
     }
 
     // ══════════════════════════════════════════
@@ -1136,6 +1177,327 @@
       }
     }
 
+    // ══════════════════════════════════════════
+    //  COMUNIDADES — CÍRCULOS
+    // ══════════════════════════════════════════
+
+    function openCreateCircleModal() { show("create-circle-modal"); }
+    function closeCreateCircleModal() {
+      hide("create-circle-modal");
+      ["circle-name","circle-img","circle-desc","circle-rules"].forEach(id=>{ const el=$(id); if(el) el.value=""; });
+    }
+
+    async function submitCircle() {
+      const name  = $("circle-name")?.value.trim();
+      const img   = $("circle-img")?.value.trim();
+      const desc  = $("circle-desc")?.value.trim();
+      const rules = $("circle-rules")?.value.trim();
+      if(!name){ alert("El nombre del círculo es obligatorio"); return; }
+      const ref = await addDoc(collection(db,"circles"), {
+        name, imageUrl: img||"", description: desc||"", rules: rules||"",
+        createdBy: ME.uid,
+        creatorName: ME.displayName||ME.email,
+        creatorPhoto: meData.photoURL||ME.photoURL||"",
+        members: [ME.uid],
+        memberCount: 1,
+        createdAt: serverTimestamp()
+      });
+      closeCreateCircleModal();
+      openCircle(ref.id);
+    }
+
+    async function joinCircle(circleId) {
+      const btn = document.getElementById("join-btn-"+circleId);
+      if(btn){ btn.disabled=true; btn.textContent="..."; }
+      await updateDoc(doc(db,"circles",circleId), {
+        members: arrayUnion(ME.uid),
+        memberCount: increment(1)
+      });
+      if(btn){ btn.disabled=false; btn.textContent="✓ Unido"; btn.className="btn-secondary"; btn.setAttribute("onclick","openCircle('"+circleId+"')"); }
+      const mc = document.getElementById("mc-"+circleId);
+      if(mc){ const n=parseInt(mc.textContent||"0"); mc.textContent=n+1; }
+    }
+
+    function setCommunitySubTab(tab) {
+      communitySubTab = tab;
+      renderCommunitiesView();
+    }
+
+    function renderCommunitiesView() {
+      view = "communities";
+      // Reset circle state when going back to list
+      activeCircleId = null;
+      activeCircleData = null;
+      if(unsubCircleMsgs){ unsubCircleMsgs(); unsubCircleMsgs=null; }
+      inn("main", `
+        <div class="page-hd">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+            <h2 style="margin-bottom:0">Comunidades</h2>
+            <button class="btn-primary sm" onclick="openCreateCircleModal()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="margin-right:5px"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Crear círculo
+            </button>
+          </div>
+          <div class="tab-row">
+            <button class="tab ${communitySubTab==="explore"?"active":""}" onclick="setCommunitySubTab('explore')">🌐 Explorar</button>
+            <button class="tab ${communitySubTab==="mine"?"active":""}" onclick="setCommunitySubTab('mine')">✦ Mis círculos</button>
+          </div>
+        </div>
+        <div id="circles-wrap"><div class="loader-txt">Cargando círculos...</div></div>`);
+      loadCircles();
+    }
+
+    function loadCircles() {
+      const wrap = $("circles-wrap");
+      if(!wrap) return;
+      const q = communitySubTab === "mine"
+        ? query(collection(db,"circles"), where("members","array-contains",ME.uid))
+        : query(collection(db,"circles"), orderBy("memberCount","desc"), limit(40));
+      getDocs(q).then(snap => {
+        if(!wrap) return;
+        const circles = snap.docs.map(d=>({id:d.id,...d.data()}));
+        if(!circles.length){
+          wrap.innerHTML = `<div class="empty"><div class="ei">${communitySubTab==="mine"?"🫧":"🌌"}</div>
+            <p>${communitySubTab==="mine"?"No te has unido a ningún círculo aún.":"No hay círculos creados aún.<br>¡Crea el primero!"}</p></div>`;
+          return;
+        }
+        wrap.innerHTML = circles.map(c => circleCard(c)).join("");
+      }).catch(e=>{
+        if(wrap) wrap.innerHTML = `<p class="subtle" style="padding:40px">Error al cargar: ${esc(e.message)}</p>`;
+      });
+    }
+
+    function circleCard(c) {
+      const isMember = (c.members||[]).includes(ME.uid);
+      const bg = c.imageUrl
+        ? `style="background-image:url('${esc(c.imageUrl)}');background-size:cover;background-position:center"`
+        : `style="background:linear-gradient(135deg,var(--accent),#9c27b0)"`;
+      return `<div class="circle-card">
+        <div class="circle-cover" ${bg} onclick="openCircle('${c.id}')">
+          <div class="circle-cover-overlay"></div>
+          <div class="circle-cover-info">
+            <div class="circle-card-name">${esc(c.name)}</div>
+            <div class="circle-card-members">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+              <span id="mc-${c.id}">${c.memberCount||0}</span> miembros
+            </div>
+          </div>
+        </div>
+        <div class="circle-card-body">
+          ${c.description ? `<p class="circle-card-desc">${esc(c.description.length>100?c.description.slice(0,100)+"…":c.description)}</p>` : ""}
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <div class="avatar sm" style="${avStyle(c.creatorPhoto)}">${avLetter(c.creatorName,c.creatorPhoto)}</div>
+              <span style="font-size:12px;color:var(--subtle)">por <strong style="color:var(--text)">${esc(c.creatorName||"Usuario")}</strong></span>
+            </div>
+            ${isMember
+              ? `<button class="btn-secondary" style="font-size:12px;padding:7px 12px" onclick="openCircle('${c.id}')">Entrar →</button>`
+              : `<button id="join-btn-${c.id}" class="btn-primary sm" onclick="joinCircle('${c.id}')">Unirse</button>`}
+          </div>
+        </div>
+      </div>`;
+    }
+
+    async function openCircle(circleId) {
+      view = "circle-room";
+      if(unsubCircleMsgs){ unsubCircleMsgs(); unsubCircleMsgs=null; }
+      circleReplyingTo = null;
+      inn("main","<div class='loader-txt'>Cargando círculo...</div>");
+
+      const snap = await getDoc(doc(db,"circles",circleId));
+      if(!snap.exists()){ inn("main","<p class='subtle' style='padding:40px'>Círculo no encontrado.</p>"); return; }
+      const c = {id:snap.id,...snap.data()};
+      activeCircleId   = circleId;
+      activeCircleData = c;
+      const isMember = (c.members||[]).includes(ME.uid);
+      const isCreator = c.createdBy === ME.uid;
+
+      // Get members info
+      let membersList = [];
+      try {
+        const mSnaps = await Promise.all((c.members||[]).slice(0,20).map(uid=>getDoc(doc(db,"users",uid))));
+        membersList = mSnaps.filter(s=>s.exists()).map(s=>s.data());
+      } catch(e){}
+
+      const membersHTML = membersList.map(u=>`
+        <div class="circle-member-item" onclick="visitProfile('${u.uid}')">
+          <div class="avatar sm" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email,u.photoURL)}</div>
+          <span style="font-size:13px">${esc(u.displayName||u.email||"Usuario")}</span>
+          ${u.uid===c.createdBy?`<span style="font-size:10px;color:var(--accent);margin-left:auto;font-weight:700">ADMIN</span>`:""}
+        </div>`).join("");
+
+      const rulesHTML = c.rules
+        ? c.rules.split("\n").filter(Boolean).map(r=>`<li>${esc(r)}</li>`).join("")
+        : "<li style='color:var(--subtle)'>Sin reglas establecidas</li>";
+
+      const bgCover = c.imageUrl
+        ? `style="background-image:url('${esc(c.imageUrl)}');background-size:cover;background-position:center"`
+        : `style="background:linear-gradient(135deg,var(--accent),#9c27b0)"`;
+
+      inn("main", `
+        <!-- Header cover -->
+        <div class="circle-room-cover" ${bgCover}>
+          <div class="circle-room-cover-overlay">
+            <button class="back-btn" onclick="backToCommunities()" style="color:#fff;opacity:.9;margin-bottom:8px">← Comunidades</button>
+            <div class="circle-room-title">${esc(c.name)}</div>
+            <div style="font-size:12px;opacity:.75;display:flex;align-items:center;gap:6px;margin-top:4px">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+              ${c.memberCount||0} miembros
+              ${!isMember?`<button class="btn-primary sm" style="margin-left:10px;padding:5px 12px;font-size:11px" onclick="joinCircle('${circleId}')">Unirse</button>`:""}
+            </div>
+          </div>
+        </div>
+
+        <!-- Content: Chat + Info panels -->
+        <div class="circle-room-body">
+          <!-- Chat panel -->
+          <div class="circle-chat-panel">
+            <div class="msgs-list" id="circle-msgs" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px">
+              <div class="loader-txt">Cargando mensajes...</div>
+            </div>
+            <div id="circle-reply-preview" style="display:none" class="msg-reply-preview">
+              <div class="mrp-inner">
+                <div class="mrp-label">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+                  <span id="crp-name"></span>
+                </div>
+                <div id="crp-text" class="mrp-text"></div>
+              </div>
+              <button class="cancel-reply-btn" onclick="cancelCircleReplyMsg()">✕</button>
+            </div>
+            ${isMember
+              ? `<div class="chat-inp-row">
+                  <div class="avatar sm" style="${avStyle(meData.photoURL||ME.photoURL)}">${avLetter(ME.displayName,meData.photoURL||ME.photoURL)}</div>
+                  <input class="inp" id="circle-msg-inp" placeholder="Escribe un mensaje..."
+                    onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendCircleMessage()}" autocomplete="off"/>
+                  <button class="btn-send" onclick="sendCircleMessage()">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  </button>
+                </div>`
+              : `<div style="padding:12px 16px;text-align:center;font-size:13px;color:var(--subtle);border-top:1px solid var(--border)">
+                  Únete para participar en la conversación
+                </div>`}
+          </div>
+
+          <!-- Info panel -->
+          <div class="circle-info-panel">
+            ${c.description?`
+            <div class="circle-info-block">
+              <div class="circle-info-title">📋 Descripción</div>
+              <p style="font-size:13px;color:var(--subtle);line-height:1.6">${esc(c.description)}</p>
+            </div>`:""}
+            <div class="circle-info-block">
+              <div class="circle-info-title">📜 Reglas</div>
+              <ol style="padding-left:18px;font-size:13px;color:var(--subtle);line-height:2">${rulesHTML}</ol>
+            </div>
+            <div class="circle-info-block">
+              <div class="circle-info-title">👥 Miembros (${c.memberCount||0})</div>
+              <div class="circle-members-list">${membersHTML}</div>
+              ${(c.members||[]).length>20?`<p style="font-size:11px;color:var(--subtle);margin-top:8px">y ${(c.members.length-20)} más...</p>`:""}
+            </div>
+          </div>
+        </div>`);
+
+      // Listen to circle messages
+      const q = query(collection(db,"circles",circleId,"messages"), orderBy("createdAt","asc"));
+      unsubCircleMsgs = onSnapshot(q, snap=>{
+        const msgs = snap.docs.map(d=>({id:d.id,...d.data()}));
+        renderCircleMessages(msgs);
+      }, err=>{
+        const el=$("circle-msgs");
+        if(el) el.innerHTML=`<p class="subtle" style="padding:20px;text-align:center">Error: ${esc(err.message)}</p>`;
+      });
+
+      setTimeout(()=>$("circle-msg-inp")?.focus(), 150);
+    }
+
+    function backToCommunities() {
+      if(unsubCircleMsgs){ unsubCircleMsgs(); unsubCircleMsgs=null; }
+      activeCircleId = null; activeCircleData = null;
+      renderCommunitiesView();
+    }
+
+    function renderCircleMessages(msgs) {
+      const list = $("circle-msgs");
+      if(!list) return;
+      if(!msgs.length){
+        list.innerHTML=`<p class="subtle" style="text-align:center;padding:40px">Sé el primero en escribir 👋</p>`;
+        return;
+      }
+      const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+      list.innerHTML = msgs.map(m=>{
+        const mine = m.senderId===ME.uid;
+        const ts = m.createdAt ? new Date(m.createdAt.seconds*1000).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"}) : "";
+        const replyHTML = m.replyTo ? `
+          <div class="msg-quoted">
+            <span class="msg-quoted-name">${esc(m.replyTo.senderName)}</span>
+            <span class="msg-quoted-text">${esc(m.replyTo.content.length>80?m.replyTo.content.slice(0,80)+"…":m.replyTo.content)}</span>
+          </div>` : "";
+        const safeContent = esc(m.content||"");
+        const safeSender  = esc(m.senderName||"");
+        const safeId      = m.id||"";
+        return `<div class="msg ${mine?"mine":"theirs"}" id="cmsg-${safeId}">
+          ${!mine?`<div class="avatar sm" style="${avStyle(m.senderPhoto)}" onclick="visitProfile('${m.senderId}')">${avLetter(m.senderName,m.senderPhoto)}</div>`:""}
+          <div style="display:flex;flex-direction:column;${mine?"align-items:flex-end":"align-items:flex-start"}">
+            ${!mine?`<span style="font-size:11px;color:var(--subtle);margin-bottom:3px;cursor:pointer" onclick="visitProfile('${m.senderId}')">${safeSender}</span>`:""}
+            <div class="bubble">
+              ${replyHTML}
+              <div class="bubble-text">${safeContent}</div>
+            </div>
+            <div class="msg-footer">
+              <span class="msg-ts">${ts}</span>
+              <button class="msg-reply-btn" onclick="setCircleReplyMsg('${safeId}','${safeSender}','${safeContent.replace(/'/g,"\\'")}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>`;
+      }).join("");
+      if(wasAtBottom) list.scrollTop = list.scrollHeight;
+    }
+
+    function setCircleReplyMsg(msgId, senderName, content) {
+      circleReplyingTo = { id: msgId, senderName, content };
+      const preview = $("circle-reply-preview");
+      if(preview){
+        preview.style.display = "flex";
+        $("crp-name").textContent = senderName;
+        $("crp-text").textContent = content.length>80 ? content.slice(0,80)+"…" : content;
+      }
+    }
+
+    function cancelCircleReplyMsg() {
+      circleReplyingTo = null;
+      const p = $("circle-reply-preview");
+      if(p) p.style.display="none";
+    }
+
+    async function sendCircleMessage() {
+      const inp = $("circle-msg-inp");
+      const t = inp?.value.trim();
+      if(!t || !activeCircleId) return;
+      inp.value = "";
+      const msgData = {
+        content: t,
+        senderId: ME.uid,
+        senderName: ME.displayName||ME.email,
+        senderPhoto: meData.photoURL||ME.photoURL||"",
+        createdAt: serverTimestamp()
+      };
+      if(circleReplyingTo) {
+        msgData.replyTo = { id: circleReplyingTo.id, senderName: circleReplyingTo.senderName, content: circleReplyingTo.content };
+      }
+      cancelCircleReplyMsg();
+      try {
+        await addDoc(collection(db,"circles",activeCircleId,"messages"), msgData);
+        await updateDoc(doc(db,"circles",activeCircleId), { lastMessage: t, lastMessageAt: serverTimestamp() });
+      } catch(e) {
+        console.error("Circle message error:", e);
+        inp.value = t;
+        alert("Error al enviar: " + e.message);
+      }
+    }
+
     async function doLogout() {
       if(unsubFeed) unsubFeed();
       if(unsubMsgs) unsubMsgs();
@@ -1392,6 +1754,37 @@
     .ci-badge { background:var(--accent); color:#fff; font-size:10px; font-weight:700; min-width:18px; height:18px; border-radius:9px; padding:0 5px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
     .mob-badge { position:absolute; top:-4px; right:-2px; background:var(--danger); color:#fff; font-size:9px; font-weight:700; min-width:16px; height:16px; border-radius:8px; padding:0 4px; display:flex; align-items:center; justify-content:center; }
     .badge { background:var(--danger); color:#fff; font-size:10px; padding:1px 5px; border-radius:20px; position:absolute; right:10px; }
+
+    /* ─── CIRCLES / COMMUNITIES ──────────────── */
+    .circle-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); overflow:hidden; margin-bottom:16px; transition:border-color .2s; }
+    .circle-card:hover { border-color:rgba(124,77,255,.4); }
+    .circle-cover { height:130px; position:relative; cursor:pointer; }
+    .circle-cover-overlay { position:absolute; inset:0; background:linear-gradient(to top, rgba(0,0,0,.75) 0%, rgba(0,0,0,.1) 60%); }
+    .circle-cover-info { position:absolute; bottom:12px; left:14px; right:14px; }
+    .circle-card-name { font-family:'Syne',sans-serif; font-weight:700; font-size:16px; color:#fff; text-shadow:0 1px 4px rgba(0,0,0,.5); }
+    .circle-card-members { display:flex; align-items:center; gap:5px; font-size:12px; color:rgba(255,255,255,.75); margin-top:4px; }
+    .circle-card-body { padding:14px; }
+    .circle-card-desc { font-size:13px; color:var(--subtle); line-height:1.5; margin-bottom:4px; }
+
+    /* Circle Room */
+    .circle-room-cover { height:160px; position:relative; border-radius:var(--r); overflow:hidden; margin-bottom:14px; flex-shrink:0; }
+    .circle-room-cover-overlay { position:absolute; inset:0; background:linear-gradient(to top, rgba(0,0,0,.85) 0%, rgba(0,0,0,.2) 70%); padding:16px 18px; display:flex; flex-direction:column; justify-content:flex-end; }
+    .circle-room-title { font-family:'Syne',sans-serif; font-weight:800; font-size:22px; color:#fff; text-shadow:0 2px 8px rgba(0,0,0,.4); }
+    .circle-room-body { display:flex; gap:14px; height:calc(100vh - 340px); min-height:340px; overflow:hidden; }
+    .circle-chat-panel { flex:1; display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border); border-radius:var(--r); overflow:hidden; min-width:0; }
+    .circle-info-panel { width:230px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
+    .circle-info-block { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:14px; }
+    .circle-info-title { font-family:'Syne',sans-serif; font-size:13px; font-weight:700; margin-bottom:10px; }
+    .circle-members-list { display:flex; flex-direction:column; gap:6px; }
+    .circle-member-item { display:flex; align-items:center; gap:8px; padding:6px; border-radius:8px; cursor:pointer; transition:background .2s; }
+    .circle-member-item:hover { background:var(--s2); }
+
+    @media (max-width:768px) {
+      .circle-room-body { flex-direction:column; height:auto; overflow:visible; }
+      .circle-info-panel { width:100%; flex-direction:row; flex-wrap:wrap; overflow:visible; }
+      .circle-info-block { flex:1; min-width:200px; }
+      .circle-chat-panel { height:400px; }
+    }
 
     /* ══════════════════════════════════════════
        RESPONSIVE — MOBILE
