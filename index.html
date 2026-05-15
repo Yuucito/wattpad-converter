@@ -49,7 +49,12 @@
     let unsubFeed = null;
     let unsubMsgs = null;
     let unsubChats = null;
-    let chatPanelOpen = false; // for mobile: show chat panel vs list
+    let chatPanelOpen = false;
+    // Chat reply state
+    let replyingTo = null; // { id, content, senderName }
+    // Unread tracking: { chatId -> count }
+    let unreadCounts = {};
+    let totalUnread = 0;
 
     // ─── HELPERS ────────────────────────────────
     const $   = id => document.getElementById(id);
@@ -72,7 +77,9 @@
       openNewChatModal, saveProfile, doLogout, visitProfile,
       followUser, unfollowUser, showFollowModal, closeFollowModal,
       showChatTab, closeMobileSidebar, toggleMobileSidebar,
-      backToChatList, deletePost
+      backToChatList, deletePost,
+      replyToComment, cancelReply,
+      setReplyMsg, cancelReplyMsg
     });
 
     // ══════════════════════════════════════════
@@ -400,6 +407,11 @@
         ${postCard(p)}
         <div class="comments-box">
           <h4>Comentarios</h4>
+          <div id="reply-cmt-banner" class="reply-cmt-banner" style="display:none">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+            Respondiendo a <span class="reply-to-name"></span>
+            <button class="cancel-reply-btn" onclick="cancelReply()">✕</button>
+          </div>
           <div class="cmt-input-row">
             <div class="avatar sm" style="${avStyle(meData.photoURL||ME.photoURL)}">${avLetter(ME.displayName, meData.photoURL||ME.photoURL)}</div>
             <input class="inp" id="cmt-txt" placeholder="Escribe un comentario..." onkeydown="if(event.key==='Enter')addComment('${pid}')"/>
@@ -410,17 +422,67 @@
       loadComments(pid);
     }
 
+    // Active reply-to-comment state: { id, authorName }
+    let replyingToComment = null;
+
+    function replyToComment(cmtId, authorName) {
+      replyingToComment = { id: cmtId, authorName };
+      const inp = $("cmt-txt");
+      if(inp){
+        inp.placeholder = "Respondiendo a @" + authorName + "...";
+        inp.focus();
+      }
+      const banner = $("reply-cmt-banner");
+      if(banner){
+        banner.style.display = "flex";
+        banner.querySelector(".reply-to-name").textContent = "@" + authorName;
+      }
+    }
+
+    function cancelReply() {
+      replyingToComment = null;
+      const inp = $("cmt-txt");
+      if(inp) inp.placeholder = "Escribe un comentario...";
+      const banner = $("reply-cmt-banner");
+      if(banner) banner.style.display = "none";
+    }
+
     function loadComments(pid) {
       const q = query(collection(db,"posts",pid,"comments"), orderBy("createdAt","asc"));
       onSnapshot(q, snap => {
         if(!$("cmts-list")) return;
         const cs = snap.docs.map(d=>({id:d.id,...d.data()}));
-        if(!cs.length){ inn("cmts-list",`<p class="subtle" style="padding:16px 0">Sin comentarios.</p>`); return; }
-        inn("cmts-list", cs.map(c=>`
-          <div class="cmt">
+        if(!cs.length){ inn("cmts-list",`<p class="subtle" style="padding:16px 0">Sin comentarios aún.</p>`); return; }
+
+        // Build a map: parentId -> replies
+        const roots = cs.filter(c=>!c.parentId);
+        const replies = cs.filter(c=>!!c.parentId);
+        const replyMap = {};
+        replies.forEach(r=>{ if(!replyMap[r.parentId]) replyMap[r.parentId]=[]; replyMap[r.parentId].push(r); });
+
+        function renderCmt(c, isReply){
+          const ts = c.createdAt ? new Date(c.createdAt.seconds*1000).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"}) : "";
+          return `<div class="cmt ${isReply?"cmt-reply":""}">
             <div class="avatar sm" style="${avStyle(c.authorPhoto)}" onclick="visitProfile('${c.authorId}')">${avLetter(c.authorName,c.authorPhoto)}</div>
-            <div><span class="cmt-name" onclick="visitProfile('${c.authorId}')">${esc(c.authorName||"?")}</span> <span class="cmt-body">${esc(c.content)}</span></div>
-          </div>`).join(""));
+            <div class="cmt-body-wrap">
+              <div class="cmt-header">
+                <span class="cmt-name" onclick="visitProfile('${c.authorId}')">${esc(c.authorName||"?")}</span>
+                ${c.replyToName?`<span class="cmt-reply-tag">→ @${esc(c.replyToName)}</span>`:""}
+                <span class="cmt-ts">${ts}</span>
+              </div>
+              <div class="cmt-text">${esc(c.content)}</div>
+              <button class="cmt-reply-btn" onclick="replyToComment('${c.id}','${esc(c.authorName||"?")}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+                Responder
+              </button>
+            </div>
+          </div>`;
+        }
+
+        inn("cmts-list", roots.map(c=>`
+          ${renderCmt(c, false)}
+          ${(replyMap[c.id]||[]).map(r=>renderCmt(r, true)).join("")}
+        `).join(""));
       });
     }
 
@@ -429,13 +491,19 @@
       const t   = inp?.value.trim();
       if(!t) return;
       inp.value = "";
-      await addDoc(collection(db,"posts",pid,"comments"), {
+      const data = {
         content: t,
         authorId: ME.uid,
         authorName: ME.displayName||ME.email,
         authorPhoto: meData.photoURL||ME.photoURL||"",
         createdAt: serverTimestamp()
-      });
+      };
+      if(replyingToComment){
+        data.parentId     = replyingToComment.id;
+        data.replyToName  = replyingToComment.authorName;
+      }
+      cancelReply();
+      await addDoc(collection(db,"posts",pid,"comments"), data);
       await updateDoc(doc(db,"posts",pid), { commentCount: increment(1), score: increment(2) });
     }
 
@@ -661,12 +729,62 @@
             const tb = b.lastMessageAt?.seconds ?? b.createdAt?.seconds ?? 0;
             return tb - ta;
           });
+        // For each chat, listen to unread count
+        chats.forEach(c => { listenUnread(c.id); });
         renderChatList(chats);
       }, err => {
         console.error("Chat list error:", err);
         const wrap = document.getElementById("chat-list-wrap");
         if(wrap) wrap.innerHTML = '<p style="padding:16px;font-size:12px;color:var(--subtle)">Error: ' + err.message + '</p>';
       });
+    }
+
+    const unreadListeners = {};
+    function listenUnread(cid) {
+      if(unreadListeners[cid]) return; // already listening
+      const q = query(
+        collection(db,"chats",cid,"messages"),
+        where("senderId","!=",ME.uid)
+      );
+      unreadListeners[cid] = onSnapshot(q, snap => {
+        const unread = snap.docs.filter(d => {
+          const data = d.data();
+          return !(data.readBy||[]).includes(ME.uid);
+        }).length;
+        // Only update if this chat isn't currently open
+        if(cid !== activeChatId) {
+          unreadCounts[cid] = unread;
+        } else {
+          unreadCounts[cid] = 0;
+        }
+        recalcTotalUnread();
+        // Re-render chat list item badge
+        updateChatItemBadge(cid, unreadCounts[cid]);
+      }, ()=>{});
+    }
+
+    function updateChatItemBadge(cid, count) {
+      const el = document.getElementById("ci-badge-"+cid);
+      if(!el) return;
+      el.textContent = count;
+      el.style.display = count ? "" : "none";
+      // Bold name if unread
+      const nameEl = document.getElementById("ci-name-"+cid);
+      if(nameEl) nameEl.style.fontWeight = count ? "800" : "600";
+      // Dot indicator
+      const dotEl = document.getElementById("ci-dot-"+cid);
+      if(dotEl) dotEl.style.display = count ? "" : "none";
+    }
+
+    function formatChatTime(ts) {
+      if(!ts) return "";
+      const d = new Date(ts.seconds*1000);
+      const now = new Date();
+      const diff = now - d;
+      if(diff < 60000) return "ahora";
+      if(diff < 3600000) return Math.floor(diff/60000)+"m";
+      if(diff < 86400000) return d.toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"});
+      return d.toLocaleDateString("es",{day:"numeric",month:"short"});
     }
 
     function renderChatList(chats) {
@@ -680,14 +798,24 @@
         const oid    = c.members.find(m=>m!==ME.uid);
         const oname  = c.memberNames?.[oid]||"Usuario";
         const ophoto = c.memberPhotos?.[oid]||"";
-        const ts     = c.lastMessageAt ? new Date(c.lastMessageAt.seconds*1000).toLocaleDateString("es",{day:"numeric",month:"short"}) : "";
-        return `<div class="chat-item ${activeChatId===c.id?"active":""}" onclick="selectChat('${c.id}','${esc(oname)}','${oid}')">
-          <div class="avatar sm" style="${avStyle(ophoto)}">${avLetter(oname, ophoto)}</div>
-          <div class="chat-item-info">
-            <div class="ci-name">${esc(oname)}</div>
-            <div class="ci-last">${esc(c.lastMessage||"Iniciar conversación")}</div>
+        const ts     = formatChatTime(c.lastMessageAt||c.createdAt);
+        const unread = unreadCounts[c.id]||0;
+        const hasUnread = unread > 0 && c.id !== activeChatId;
+        return `<div class="chat-item ${activeChatId===c.id?"active":""} ${hasUnread?"has-unread":""}" onclick="selectChat('${c.id}','${esc(oname)}','${oid}')">
+          <div style="position:relative;flex-shrink:0">
+            <div class="avatar sm" style="${avStyle(ophoto)}">${avLetter(oname, ophoto)}</div>
+            <span id="ci-dot-${c.id}" class="ci-unread-dot" style="display:${hasUnread?"":"none"}"></span>
           </div>
-          <div class="ci-time">${ts}</div>
+          <div class="chat-item-info">
+            <div class="ci-name-row">
+              <span id="ci-name-${c.id}" class="ci-name" style="font-weight:${hasUnread?"800":"600"}">${esc(oname)}</span>
+              <span class="ci-time">${ts}</span>
+            </div>
+            <div class="ci-last-row">
+              <span class="ci-last">${esc(c.lastMessage||"Iniciar conversación")}</span>
+              <span id="ci-badge-${c.id}" class="ci-badge" style="display:${hasUnread?"":"none"}">${hasUnread?unread:""}</span>
+            </div>
+          </div>
         </div>`;
       }).join("");
     }
@@ -729,6 +857,7 @@
         if(otherSnap.exists()) otherPhoto = otherSnap.data().photoURL||"";
       } catch(e){}
 
+      replyingTo = null;
       chatMain.innerHTML = `
         <div class="chat-room-hd">
           <button class="back-btn-chat" onclick="backToChatList()">
@@ -738,6 +867,16 @@
           <span class="chat-room-name" onclick="visitProfile('${oid}')">${esc(oname)}</span>
         </div>
         <div class="msgs-list" id="msgs-list"><div class="loader-txt">Cargando mensajes...</div></div>
+        <div id="msg-reply-preview" class="msg-reply-preview" style="display:none">
+          <div class="mrp-inner">
+            <div class="mrp-label">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+              <span id="mrp-name"></span>
+            </div>
+            <div id="mrp-text" class="mrp-text"></div>
+          </div>
+          <button class="cancel-reply-btn" onclick="cancelReplyMsg()">✕</button>
+        </div>
         <div class="chat-inp-row">
           <input class="inp" id="msg-inp" placeholder="Escribe un mensaje..."
             onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage('${cid}')}"
@@ -765,6 +904,23 @@
       startListeningChats();
     }
 
+    function setReplyMsg(msgId, senderName, content) {
+      replyingTo = { id: msgId, senderName, content };
+      const preview = $("msg-reply-preview");
+      if(preview){
+        preview.style.display = "flex";
+        $("mrp-name").textContent = senderName;
+        $("mrp-text").textContent = content.length > 80 ? content.slice(0,80)+"…" : content;
+      }
+      $("msg-inp")?.focus();
+    }
+
+    function cancelReplyMsg() {
+      replyingTo = null;
+      const preview = $("msg-reply-preview");
+      if(preview) preview.style.display = "none";
+    }
+
     function renderMessages(msgs) {
       const list = $("msgs-list");
       if(!list) return;
@@ -773,16 +929,79 @@
         return;
       }
       const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+
+      // Mark received messages as read
+      const cid = activeChatId;
+      const unreadMsgs = msgs.filter(m => m.senderId !== ME.uid && !m.readBy?.includes(ME.uid));
+      if(unreadMsgs.length && cid){
+        unreadMsgs.forEach(m => {
+          updateDoc(doc(db,"chats",cid,"messages",m.id), {
+            readBy: arrayUnion(ME.uid)
+          }).catch(()=>{});
+        });
+        // Reset local unread for this chat
+        unreadCounts[cid] = 0;
+        recalcTotalUnread();
+      }
+
       list.innerHTML = msgs.map(m=>{
         const mine = m.senderId===ME.uid;
         const ts   = m.createdAt ? new Date(m.createdAt.seconds*1000).toLocaleTimeString("es",{hour:"2-digit",minute:"2-digit"}) : "";
-        return `<div class="msg ${mine?"mine":"theirs"}">
-          <div class="bubble">${esc(m.content)}</div>
-          <div class="msg-ts">${ts}</div>
+        const replyHTML = m.replyTo ? `
+          <div class="msg-quoted">
+            <span class="msg-quoted-name">${esc(m.replyTo.senderName)}</span>
+            <span class="msg-quoted-text">${esc(m.replyTo.content.length>80?m.replyTo.content.slice(0,80)+"…":m.replyTo.content)}</span>
+          </div>` : "";
+        const safeContent = esc(m.content||"");
+        const safeSender  = esc(m.senderName||"");
+        const safeId      = m.id||"";
+        return `<div class="msg ${mine?"mine":"theirs"}" id="msg-${safeId}">
+          <div class="bubble">
+            ${replyHTML}
+            <div class="bubble-text">${safeContent}</div>
+          </div>
+          <div class="msg-footer">
+            <span class="msg-ts">${ts}</span>
+            <button class="msg-reply-btn" onclick="setReplyMsg('${safeId}','${safeSender}','${safeContent.replace(/'/g,"\\'")}')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+            </button>
+          </div>
         </div>`;
       }).join("");
-      // Auto-scroll solo si ya estaba al fondo
       if(wasAtBottom) list.scrollTop = list.scrollHeight;
+    }
+
+    function recalcTotalUnread() {
+      totalUnread = Object.values(unreadCounts).reduce((s,n)=>s+n,0);
+      updateUnreadBadge();
+    }
+
+    function updateUnreadBadge() {
+      // Desktop sidebar badge (nav-chat)
+      let badge = $("chat-nav-badge");
+      if(!badge){
+        const navChat = $("nav-chat");
+        if(navChat){
+          badge = document.createElement("span");
+          badge.id = "chat-nav-badge";
+          badge.className = "badge";
+          navChat.appendChild(badge);
+        }
+      }
+      if(badge){ badge.textContent = totalUnread; badge.style.display = totalUnread ? "" : "none"; }
+      // Mobile bottom nav badge
+      let mbadge = $("mob-chat-badge");
+      if(!mbadge){
+        const mobChat = $("mobnav-chat");
+        if(mobChat){
+          mbadge = document.createElement("span");
+          mbadge.id = "mob-chat-badge";
+          mbadge.className = "mob-badge";
+          mobChat.style.position = "relative";
+          mobChat.appendChild(mbadge);
+        }
+      }
+      if(mbadge){ mbadge.textContent = totalUnread; mbadge.style.display = totalUnread ? "" : "none"; }
     }
 
     // ── FIX PRINCIPAL: sendMessage sin verificación de "accepted" ──
@@ -794,20 +1013,26 @@
       inp.value = "";
       inp.focus();
 
+      const msgData = {
+        content: t,
+        senderId: ME.uid,
+        senderName: ME.displayName||ME.email,
+        readBy: [ME.uid],
+        createdAt: serverTimestamp()
+      };
+      if(replyingTo) {
+        msgData.replyTo = { id: replyingTo.id, senderName: replyingTo.senderName, content: replyingTo.content };
+      }
+      cancelReplyMsg();
       try {
-        await addDoc(collection(db,"chats",cid,"messages"), {
-          content: t,
-          senderId: ME.uid,
-          senderName: ME.displayName||ME.email,
-          createdAt: serverTimestamp()
-        });
+        await addDoc(collection(db,"chats",cid,"messages"), msgData);
         await updateDoc(doc(db,"chats",cid), {
           lastMessage: t,
           lastMessageAt: serverTimestamp()
         });
       } catch(e) {
         console.error("sendMessage error:", e);
-        inp.value = t; // restaurar si falló
+        inp.value = t;
         alert("Error al enviar: " + e.message);
       }
     }
@@ -1125,6 +1350,48 @@
     ::-webkit-scrollbar { width:4px; }
     ::-webkit-scrollbar-track { background:transparent; }
     ::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+    /* ─── COMMENT THREADS ─────────────────────── */
+    .cmt { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--border); }
+    .cmt-reply { margin-left:42px; border-left:2px solid var(--accent); padding-left:10px; background:rgba(124,77,255,.04); border-bottom:none; margin-bottom:2px; border-radius:0 6px 6px 0; }
+    .cmt-body-wrap { flex:1; min-width:0; }
+    .cmt-header { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:3px; }
+    .cmt-name { font-weight:600; font-size:13px; cursor:pointer; }
+    .cmt-name:hover { color:var(--accent); }
+    .cmt-reply-tag { font-size:11px; color:var(--accent); font-weight:500; }
+    .cmt-ts { font-size:10px; color:var(--subtle); margin-left:auto; }
+    .cmt-text { font-size:13px; line-height:1.5; word-break:break-word; }
+    .cmt-reply-btn { background:none; border:none; color:var(--subtle); font-size:11px; cursor:pointer; padding:4px 0; margin-top:4px; display:flex; align-items:center; gap:4px; transition:color .15s; font-family:inherit; }
+    .cmt-reply-btn:hover { color:var(--accent); }
+    .reply-cmt-banner { display:flex; align-items:center; gap:8px; padding:8px 12px; background:rgba(124,77,255,.1); border-left:3px solid var(--accent); border-radius:6px; margin-bottom:8px; font-size:12px; color:var(--accent); }
+    .reply-to-name { font-weight:700; }
+    .cancel-reply-btn { margin-left:auto; background:none; border:none; color:var(--subtle); cursor:pointer; font-size:14px; padding:2px 4px; border-radius:4px; transition:color .15s; }
+    .cancel-reply-btn:hover { color:var(--danger); }
+
+    /* ─── CHAT MESSAGE REPLY ─────────────────── */
+    .msg-reply-preview { display:flex; align-items:center; gap:8px; padding:8px 14px; background:var(--s2); border-top:1px solid var(--border); border-left:3px solid var(--accent); }
+    .mrp-inner { flex:1; min-width:0; }
+    .mrp-label { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--accent); font-weight:600; margin-bottom:2px; }
+    .mrp-text { font-size:12px; color:var(--subtle); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .msg-quoted { background:rgba(255,255,255,.06); border-left:3px solid rgba(255,255,255,.3); border-radius:6px; padding:5px 8px; margin-bottom:6px; }
+    .mine .msg-quoted { background:rgba(0,0,0,.15); border-left-color:rgba(255,255,255,.5); }
+    .msg-quoted-name { display:block; font-size:10px; font-weight:700; margin-bottom:2px; opacity:.9; }
+    .msg-quoted-text { display:block; font-size:11px; opacity:.75; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+    .bubble-text { }
+    .msg-footer { display:flex; align-items:center; gap:6px; margin-top:3px; }
+    .msg-reply-btn { background:none; border:none; color:var(--subtle); cursor:pointer; padding:2px 4px; border-radius:4px; opacity:0; transition:opacity .15s,color .15s; display:flex; align-items:center; }
+    .msg:hover .msg-reply-btn { opacity:1; }
+    .msg-reply-btn:hover { color:var(--accent); }
+
+    /* ─── CHAT LIST UNREAD ───────────────────── */
+    .chat-item.has-unread { background:rgba(124,77,255,.07); }
+    .chat-item.has-unread:hover { background:rgba(124,77,255,.14); }
+    .ci-unread-dot { position:absolute; bottom:0; right:0; width:11px; height:11px; background:var(--accent); border-radius:50%; border:2px solid var(--bg); }
+    .ci-name-row { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:2px; }
+    .ci-last-row { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+    .ci-badge { background:var(--accent); color:#fff; font-size:10px; font-weight:700; min-width:18px; height:18px; border-radius:9px; padding:0 5px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .mob-badge { position:absolute; top:-4px; right:-2px; background:var(--danger); color:#fff; font-size:9px; font-weight:700; min-width:16px; height:16px; border-radius:8px; padding:0 4px; display:flex; align-items:center; justify-content:center; }
+    .badge { background:var(--danger); color:#fff; font-size:10px; padding:1px 5px; border-radius:20px; position:absolute; right:10px; }
 
     /* ══════════════════════════════════════════
        RESPONSIVE — MOBILE
