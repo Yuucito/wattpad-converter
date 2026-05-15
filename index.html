@@ -88,7 +88,8 @@
       setReplyMsg, cancelReplyMsg,
       openCreateCircleModal, closeCreateCircleModal, submitCircle,
       joinCircle, openCircle, backToCommunities, setCommunitySubTab,
-      sendCircleMessage, setCircleReplyMsg, cancelCircleReplyMsg
+      sendCircleMessage, setCircleReplyMsg, cancelCircleReplyMsg,
+      openCircleInfo, closeCircleInfo
     });
 
     // ══════════════════════════════════════════
@@ -333,6 +334,7 @@
     function goView(v) {
       view = v;
       chatPanelOpen = false;
+      $("main")?.classList.remove("circle-mode");
       // sync desktop sidebar
       document.querySelectorAll(".nav-item").forEach(x=>x.classList.remove("active"));
       const navKey = ["post-detail","other-profile"].includes(v) ? "feed" : v==="circle-room" ? "communities" : v;
@@ -1303,6 +1305,7 @@
       if(unsubCircleMsgs){ unsubCircleMsgs(); unsubCircleMsgs=null; }
       circleReplyingTo = null;
       inn("main","<div class='loader-txt'>Cargando círculo...</div>");
+      $("main")?.classList.add("circle-mode");
 
       const snap = await getDoc(doc(db,"circles",circleId));
       if(!snap.exists()){ inn("main","<p class='subtle' style='padding:40px'>Círculo no encontrado.</p>"); return; }
@@ -1310,9 +1313,12 @@
       activeCircleId   = circleId;
       activeCircleData = c;
       const isMember = (c.members||[]).includes(ME.uid);
-      const isCreator = c.createdBy === ME.uid;
 
-      // Get members info
+      const bgCover = c.imageUrl
+        ? `style="background-image:url('${esc(c.imageUrl)}');background-size:cover;background-position:center"`
+        : `style="background:linear-gradient(135deg,var(--accent),#9c27b0)"`;
+
+      // Pre-load members for info modal
       let membersList = [];
       try {
         const mSnaps = await Promise.all((c.members||[]).slice(0,20).map(uid=>getDoc(doc(db,"users",uid))));
@@ -1320,82 +1326,95 @@
       } catch(e){}
 
       const membersHTML = membersList.map(u=>`
-        <div class="circle-member-item" onclick="visitProfile('${u.uid}')">
+        <div class="circle-member-item" onclick="closeCircleInfo();visitProfile('${u.uid}')">
           <div class="avatar sm" style="${avStyle(u.photoURL)}">${avLetter(u.displayName||u.email,u.photoURL)}</div>
           <span style="font-size:13px">${esc(u.displayName||u.email||"Usuario")}</span>
           ${u.uid===c.createdBy?`<span style="font-size:10px;color:var(--accent);margin-left:auto;font-weight:700">ADMIN</span>`:""}
         </div>`).join("");
 
       const rulesHTML = c.rules
-        ? c.rules.split("\n").filter(Boolean).map(r=>`<li>${esc(r)}</li>`).join("")
+        ? c.rules.split("\n").filter(Boolean).map((r,i)=>`<li>${esc(r)}</li>`).join("")
         : "<li style='color:var(--subtle)'>Sin reglas establecidas</li>";
 
-      const bgCover = c.imageUrl
-        ? `style="background-image:url('${esc(c.imageUrl)}');background-size:cover;background-position:center"`
-        : `style="background:linear-gradient(135deg,var(--accent),#9c27b0)"`;
-
       inn("main", `
-        <!-- Header cover -->
-        <div class="circle-room-cover" ${bgCover}>
-          <div class="circle-room-cover-overlay">
-            <button class="back-btn" onclick="backToCommunities()" style="color:#fff;opacity:.9;margin-bottom:8px">← Comunidades</button>
-            <div class="circle-room-title">${esc(c.name)}</div>
-            <div style="font-size:12px;opacity:.75;display:flex;align-items:center;gap:6px;margin-top:4px">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-              ${c.memberCount||0} miembros
-              ${!isMember?`<button class="btn-primary sm" style="margin-left:10px;padding:5px 12px;font-size:11px" onclick="joinCircle('${circleId}')">Unirse</button>`:""}
+        <!-- Info modal (hidden by default) -->
+        <div id="circle-info-overlay" class="circle-info-overlay" onclick="if(event.target===this)closeCircleInfo()" style="display:none">
+          <div class="circle-info-drawer">
+            <div class="modal-hd" style="padding:18px 18px 12px">
+              <h3 style="font-family:'Syne',sans-serif;font-size:16px">Detalles del círculo</h3>
+              <button class="btn-x" onclick="closeCircleInfo()">✕</button>
+            </div>
+            <div style="overflow-y:auto;flex:1;padding:0 18px 18px;display:flex;flex-direction:column;gap:14px">
+              ${c.description?`
+              <div>
+                <div class="circle-info-title">📋 Descripción</div>
+                <p style="font-size:13px;color:var(--subtle);line-height:1.6;margin-top:6px">${esc(c.description)}</p>
+              </div>`:""}
+              <div>
+                <div class="circle-info-title">📜 Reglas</div>
+                <ol style="padding-left:18px;font-size:13px;color:var(--subtle);line-height:2;margin-top:6px">${rulesHTML}</ol>
+              </div>
+              <div>
+                <div class="circle-info-title">👥 Miembros (${c.memberCount||0})</div>
+                <div class="circle-members-list" style="margin-top:8px">${membersHTML}</div>
+                ${(c.members||[]).length>20?`<p style="font-size:11px;color:var(--subtle);margin-top:8px">y ${c.members.length-20} más...</p>`:""}
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- Content: Chat + Info panels -->
-        <div class="circle-room-body">
-          <!-- Chat panel -->
-          <div class="circle-chat-panel">
-            <div class="msgs-list" id="circle-msgs" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px">
-              <div class="loader-txt">Cargando mensajes...</div>
-            </div>
-            <div id="circle-reply-preview" style="display:none" class="msg-reply-preview">
-              <div class="mrp-inner">
-                <div class="mrp-label">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
-                  <span id="crp-name"></span>
+        <!-- Chat layout identical to private chat -->
+        <div class="circle-chat-layout">
+          <!-- Header banner (cover style) -->
+          <div class="circle-room-hd" ${bgCover}>
+            <div class="circle-room-hd-overlay">
+              <button class="back-btn-chat" onclick="backToCommunities()" style="color:rgba(255,255,255,.85)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <div style="flex:1;min-width:0">
+                <div class="circle-room-name">${esc(c.name)}</div>
+                <div style="font-size:11px;opacity:.7;display:flex;align-items:center;gap:4px;margin-top:1px">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                  ${c.memberCount||0} miembros
+                  ${!isMember?`<button class="btn-primary sm" style="margin-left:8px;padding:3px 10px;font-size:10px" onclick="joinCircle('${circleId}')">Unirse</button>`:""}
                 </div>
-                <div id="crp-text" class="mrp-text"></div>
               </div>
-              <button class="cancel-reply-btn" onclick="cancelCircleReplyMsg()">✕</button>
+              <button class="circle-info-btn" onclick="openCircleInfo()" title="Detalles del círculo">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              </button>
             </div>
-            ${isMember
-              ? `<div class="chat-inp-row">
-                  <div class="avatar sm" style="${avStyle(meData.photoURL||ME.photoURL)}">${avLetter(ME.displayName,meData.photoURL||ME.photoURL)}</div>
-                  <input class="inp" id="circle-msg-inp" placeholder="Escribe un mensaje..."
-                    onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendCircleMessage()}" autocomplete="off"/>
-                  <button class="btn-send" onclick="sendCircleMessage()">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                  </button>
-                </div>`
-              : `<div style="padding:12px 16px;text-align:center;font-size:13px;color:var(--subtle);border-top:1px solid var(--border)">
-                  Únete para participar en la conversación
-                </div>`}
           </div>
 
-          <!-- Info panel -->
-          <div class="circle-info-panel">
-            ${c.description?`
-            <div class="circle-info-block">
-              <div class="circle-info-title">📋 Descripción</div>
-              <p style="font-size:13px;color:var(--subtle);line-height:1.6">${esc(c.description)}</p>
-            </div>`:""}
-            <div class="circle-info-block">
-              <div class="circle-info-title">📜 Reglas</div>
-              <ol style="padding-left:18px;font-size:13px;color:var(--subtle);line-height:2">${rulesHTML}</ol>
-            </div>
-            <div class="circle-info-block">
-              <div class="circle-info-title">👥 Miembros (${c.memberCount||0})</div>
-              <div class="circle-members-list">${membersHTML}</div>
-              ${(c.members||[]).length>20?`<p style="font-size:11px;color:var(--subtle);margin-top:8px">y ${(c.members.length-20)} más...</p>`:""}
-            </div>
+          <!-- Messages -->
+          <div class="msgs-list" id="circle-msgs">
+            <div class="loader-txt">Cargando mensajes...</div>
           </div>
+
+          <!-- Reply preview -->
+          <div id="circle-reply-preview" style="display:none" class="msg-reply-preview">
+            <div class="mrp-inner">
+              <div class="mrp-label">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+                <span id="crp-name"></span>
+              </div>
+              <div id="crp-text" class="mrp-text"></div>
+            </div>
+            <button class="cancel-reply-btn" onclick="cancelCircleReplyMsg()">✕</button>
+          </div>
+
+          <!-- Input -->
+          ${isMember
+            ? `<div class="chat-inp-row">
+                <div class="avatar sm" style="${avStyle(meData.photoURL||ME.photoURL)}">${avLetter(ME.displayName,meData.photoURL||ME.photoURL)}</div>
+                <input class="inp" id="circle-msg-inp" placeholder="Escribe un mensaje..."
+                  onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendCircleMessage()}" autocomplete="off"/>
+                <button class="btn-send" onclick="sendCircleMessage()">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+              </div>`
+            : `<div style="padding:12px 16px;text-align:center;font-size:13px;color:var(--subtle);border-top:1px solid var(--border)">
+                Únete para participar en la conversación
+              </div>`}
         </div>`);
 
       // Listen to circle messages
@@ -1411,9 +1430,13 @@
       setTimeout(()=>$("circle-msg-inp")?.focus(), 150);
     }
 
+    function openCircleInfo()  { const o=$("circle-info-overlay"); if(o) o.style.display="flex"; }
+    function closeCircleInfo() { const o=$("circle-info-overlay"); if(o) o.style.display="none"; }
+
     function backToCommunities() {
       if(unsubCircleMsgs){ unsubCircleMsgs(); unsubCircleMsgs=null; }
       activeCircleId = null; activeCircleData = null;
+      $("main")?.classList.remove("circle-mode");
       renderCommunitiesView();
     }
 
@@ -1611,6 +1634,7 @@
 
     /* Main content */
     .main { flex:1; max-width:680px; padding:24px 24px 80px; overflow-y:auto; max-height:100vh; }
+    .main.circle-mode { padding:0; overflow:hidden; max-width:none; }
 
     .page-hd { margin-bottom:20px; }
     .page-hd h2 { font-family:'Syne',sans-serif; font-weight:800; font-size:26px; margin-bottom:14px; }
@@ -1766,24 +1790,28 @@
     .circle-card-body { padding:14px; }
     .circle-card-desc { font-size:13px; color:var(--subtle); line-height:1.5; margin-bottom:4px; }
 
-    /* Circle Room */
-    .circle-room-cover { height:160px; position:relative; border-radius:var(--r); overflow:hidden; margin-bottom:14px; flex-shrink:0; }
-    .circle-room-cover-overlay { position:absolute; inset:0; background:linear-gradient(to top, rgba(0,0,0,.85) 0%, rgba(0,0,0,.2) 70%); padding:16px 18px; display:flex; flex-direction:column; justify-content:flex-end; }
-    .circle-room-title { font-family:'Syne',sans-serif; font-weight:800; font-size:22px; color:#fff; text-shadow:0 2px 8px rgba(0,0,0,.4); }
-    .circle-room-body { display:flex; gap:14px; height:calc(100vh - 340px); min-height:340px; overflow:hidden; }
-    .circle-chat-panel { flex:1; display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border); border-radius:var(--r); overflow:hidden; min-width:0; }
-    .circle-info-panel { width:230px; flex-shrink:0; display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
-    .circle-info-block { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:14px; }
-    .circle-info-title { font-family:'Syne',sans-serif; font-size:13px; font-weight:700; margin-bottom:10px; }
-    .circle-members-list { display:flex; flex-direction:column; gap:6px; }
-    .circle-member-item { display:flex; align-items:center; gap:8px; padding:6px; border-radius:8px; cursor:pointer; transition:background .2s; }
+    /* Circle Room — chat layout */
+    .circle-chat-layout { display:flex; flex-direction:column; height:calc(100vh - 48px); overflow:hidden; }
+    .circle-room-hd { height:72px; flex-shrink:0; position:relative; background-size:cover; background-position:center; }
+    .circle-room-hd-overlay { position:absolute; inset:0; background:linear-gradient(to right, rgba(0,0,0,.78) 0%, rgba(0,0,0,.45) 100%); display:flex; align-items:center; gap:10px; padding:0 14px; }
+    .circle-room-name { font-family:'Syne',sans-serif; font-weight:700; font-size:16px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-shadow:0 1px 6px rgba(0,0,0,.5); }
+    .circle-info-btn { background:rgba(255,255,255,.15); border:1px solid rgba(255,255,255,.2); color:#fff; width:34px; height:34px; border-radius:8px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; transition:background .2s; }
+    .circle-info-btn:hover { background:rgba(255,255,255,.25); }
+    .circle-chat-layout .msgs-list { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:8px; }
+
+    /* Info overlay / drawer */
+    .circle-info-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); z-index:500; align-items:center; justify-content:flex-end; }
+    .circle-info-drawer { width:320px; max-width:100%; height:100%; background:var(--surface); border-left:1px solid var(--border); display:flex; flex-direction:column; animation:slideInRight .25s ease; }
+    @keyframes slideInRight { from{transform:translateX(100%)} to{transform:translateX(0)} }
+    .circle-info-title { font-family:'Syne',sans-serif; font-size:13px; font-weight:700; }
+    .circle-members-list { display:flex; flex-direction:column; gap:4px; }
+    .circle-member-item { display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:8px; cursor:pointer; transition:background .2s; }
     .circle-member-item:hover { background:var(--s2); }
 
     @media (max-width:768px) {
-      .circle-room-body { flex-direction:column; height:auto; overflow:visible; }
-      .circle-info-panel { width:100%; flex-direction:row; flex-wrap:wrap; overflow:visible; }
-      .circle-info-block { flex:1; min-width:200px; }
-      .circle-chat-panel { height:400px; }
+      .circle-chat-layout { height:calc(100vh - var(--mob-topbar-h) - var(--mob-bottomnav-h)); }
+      .circle-info-drawer { width:100%; border-left:none; border-top:1px solid var(--border); height:85vh; border-radius:18px 18px 0 0; }
+      .circle-info-overlay { align-items:flex-end; justify-content:center; }
     }
 
     /* ══════════════════════════════════════════
