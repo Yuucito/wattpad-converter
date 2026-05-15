@@ -1621,10 +1621,10 @@
     .btn-logout:hover { color:var(--danger); }
 
     /* Mobile bottom nav — hidden on desktop */
-    .mob-bottom-nav { display:none; position:fixed; bottom:0; left:0; right:0; height:var(--mob-bottomnav-h); background:var(--surface); border-top:1px solid var(--border); z-index:200; padding:0 8px; align-items:center; justify-content:space-around; }
-    .mob-nav-item { display:flex; flex-direction:column; align-items:center; gap:3px; color:var(--subtle); cursor:pointer; padding:6px 12px; border-radius:10px; transition:color .2s; font-size:10px; font-family:'DM Sans',sans-serif; background:none; border:none; flex:1; }
+    .mob-bottom-nav { display:none; position:fixed; bottom:0; left:0; right:0; height:var(--mob-bottomnav-h); background:var(--surface); border-top:1px solid var(--border); z-index:200; padding:0 2px; align-items:center; justify-content:space-around; }
+    .mob-nav-item { display:flex; flex-direction:column; align-items:center; gap:2px; color:var(--subtle); cursor:pointer; padding:5px 4px; border-radius:10px; transition:color .2s; font-size:9px; font-family:'DM Sans',sans-serif; background:none; border:none; flex:1; min-width:0; }
     .mob-nav-item:hover, .mob-nav-item.active { color:var(--accent); }
-    .mob-post-circle { width:44px; height:44px; border-radius:50%; background:linear-gradient(135deg,var(--accent),#9c27b0); display:flex; align-items:center; justify-content:center; color:#fff; margin-bottom:-2px; box-shadow:0 4px 16px rgba(124,77,255,.4); }
+    .mob-post-circle { width:38px; height:38px; border-radius:50%; background:linear-gradient(135deg,var(--accent),#9c27b0); display:flex; align-items:center; justify-content:center; color:#fff; margin-bottom:-2px; box-shadow:0 4px 14px rgba(124,77,255,.4); }
 
     /* Avatar */
     .avatar { width:42px; height:42px; border-radius:50%; background:linear-gradient(135deg,var(--accent),#9c27b0); display:flex; align-items:center; justify-content:center; font-family:'Syne',sans-serif; font-weight:700; font-size:16px; color:#fff; flex-shrink:0; cursor:pointer; }
@@ -1634,7 +1634,7 @@
 
     /* Main content */
     .main { flex:1; max-width:680px; padding:24px 24px 80px; overflow-y:auto; max-height:100vh; }
-    .main.circle-mode { padding:0; overflow:hidden; max-width:none; }
+    .main.circle-mode { padding:0; overflow:hidden; max-width:100%; flex:1; }
 
     .page-hd { margin-bottom:20px; }
     .page-hd h2 { font-family:'Syne',sans-serif; font-weight:800; font-size:26px; margin-bottom:14px; }
@@ -1768,6 +1768,7 @@
     .msg-reply-btn { background:none; border:none; color:var(--subtle); cursor:pointer; padding:2px 4px; border-radius:4px; opacity:0; transition:opacity .15s,color .15s; display:flex; align-items:center; }
     .msg:hover .msg-reply-btn { opacity:1; }
     .msg-reply-btn:hover { color:var(--accent); }
+    @media (hover: none) { .msg-reply-btn { opacity:1; } }
 
     /* ─── CHAT LIST UNREAD ───────────────────── */
     .chat-item.has-unread { background:rgba(124,77,255,.07); }
@@ -1818,20 +1819,27 @@
        RESPONSIVE — MOBILE
        ══════════════════════════════════════════ */
     @media (max-width: 768px) {
-      /* Show mobile bars */
-      .mob-topbar    { display:flex; }
-      .mob-bottom-nav{ display:flex; }
+      /* ── Show mobile bars ── */
+      .mob-topbar     { display:flex; }
+      .mob-bottom-nav { display:flex; }
 
-      /* Offset content for fixed bars */
+      /* ── Main content offset for fixed bars ── */
       .main {
-        padding-top: calc(var(--mob-topbar-h) + 16px);
+        padding-top: calc(var(--mob-topbar-h) + 12px);
         padding-bottom: calc(var(--mob-bottomnav-h) + 16px);
         padding-left: 14px;
         padding-right: 14px;
         max-height: 100vh;
+        max-width: 100%;
       }
 
-      /* Sidebar becomes slide-in drawer */
+      /* ── Circle-mode resets padding so chat fills screen ── */
+      .main.circle-mode {
+        padding: 0;
+        overflow: hidden;
+      }
+
+      /* ── Sidebar drawer ── */
       .sidebar {
         position: fixed;
         left: 0; top: 0; bottom: 0;
@@ -1839,17 +1847,16 @@
         width: 260px;
         transform: translateX(-100%);
         padding-top: 20px;
+        transition: transform .28s cubic-bezier(.4,0,.2,1);
       }
       .sidebar.mob-open { transform: translateX(0); }
       .sidebar-logo { margin-bottom: 16px; }
 
-      /* Chat view becomes full-screen panels */
+      /* ── Chat layout ── */
       .chat-layout {
         height: calc(100vh - var(--mob-topbar-h) - var(--mob-bottomnav-h));
         position: relative;
       }
-
-      /* On mobile, sidebar takes full width */
       .chat-sidebar {
         position: absolute;
         inset: 0;
@@ -1858,34 +1865,75 @@
         z-index: 1;
       }
       .chat-sidebar.mob-hidden { display: none; }
-
-      /* Chat main panel takes full width */
       .chat-main {
         position: absolute;
         inset: 0;
         width: 100%;
         z-index: 2;
         background: var(--bg);
-        /* Hidden by default on mobile unless activated */
         display: none;
       }
-      /* Show chat panel when a chat is active */
       .chat-main.chat-main-desktop-show { display: none; }
-
-      /* back-btn-chat visible on mobile */
       .back-btn-chat { display: flex; }
 
-      /* Post card padding */
-      .post-card { padding: 14px; }
-      .post-actions { gap: 5px; }
+      /* ── Circle chat layout ── */
+      .circle-chat-layout {
+        height: calc(100vh - var(--mob-topbar-h) - var(--mob-bottomnav-h));
+      }
+      .circle-room-hd { height: 64px; }
+      .circle-room-name { font-size: 14px; }
+
+      /* ── Circle info drawer → bottom sheet ── */
+      .circle-info-overlay {
+        align-items: flex-end;
+        justify-content: center;
+      }
+      .circle-info-drawer {
+        width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        height: 88vh;
+        border-radius: 18px 18px 0 0;
+        animation: slideInUp .25s ease;
+      }
+      @keyframes slideInUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
+
+      /* ── Posts ── */
+      .post-card { padding: 13px; }
+      .post-actions { gap: 4px; flex-wrap: wrap; }
       .act-btn { padding: 5px 10px; font-size: 11px; }
+      .post-body { font-size: 13px; }
 
-      /* Profile */
-      .profile-hero { gap: 14px; }
-      .profile-info h2 { font-size: 18px; }
+      /* ── Feed tabs ── */
+      .tab-row { gap: 6px; }
+      .tab { padding: 7px 14px; font-size: 12px; }
+      .page-hd h2 { font-size: 20px; margin-bottom: 12px; }
 
-      /* Hide page-hd title if too big */
-      .page-hd h2 { font-size: 22px; }
+      /* ── Communities ── */
+      .circle-card-name { font-size: 15px; }
+      .circle-card-body { padding: 12px; }
+
+      /* ── Profile ── */
+      .profile-hero { gap: 12px; flex-wrap: wrap; }
+      .profile-info h2 { font-size: 17px; }
+      .profile-info { min-width: 0; }
+      .edit-section { padding: 16px; }
+
+      /* ── Modals ── */
+      .modal-box { padding: 18px 16px; border-radius: 16px; }
+
+      /* ── Messages ── */
+      .msg { max-width: 88%; }
+      .bubble { font-size: 13px; padding: 9px 12px; }
+      .msgs-list { padding: 12px 10px; gap: 6px; }
+      .chat-inp-row { padding: 10px 12px; gap: 7px; }
+      .chat-inp-row .inp { font-size: 14px; }
+
+      /* ── Reply preview ── */
+      .msg-reply-btn { opacity: 1 !important; }
+
+      /* ── Bottom nav labels ── */
+      .mob-nav-item { font-size: 9px; padding: 4px 8px; }
     }
 
     /* When chat panel is open on mobile — show it, hide list */
@@ -1896,17 +1944,21 @@
 
     @media (min-width: 769px) {
       /* Desktop: always show both panels */
-      .chat-main { display: flex !important; }
+      .chat-main    { display: flex !important; }
       .chat-sidebar { display: flex !important; }
       .back-btn-chat { display: none; }
-      .mob-overlay { display: none !important; }
+      .mob-overlay  { display: none !important; }
     }
 
-    /* Small phones */
+    /* ── Extra small phones ── */
     @media (max-width: 380px) {
-      .post-card { padding: 12px; }
-      .act-btn { padding: 5px 8px; gap: 4px; }
-      .avatar.xl { width: 54px; height: 54px; font-size: 18px; }
+      .post-card { padding: 11px; }
+      .act-btn { padding: 5px 7px; gap: 3px; font-size: 10px; }
+      .avatar.xl { width: 52px; height: 52px; font-size: 18px; }
+      .tab { padding: 6px 10px; font-size: 11px; }
+      .circle-card-name { font-size: 13px; }
+      .bubble { font-size: 12px; }
+      .mob-nav-item { padding: 3px 5px; font-size: 8px; }
     }
   </style>
 </head>
